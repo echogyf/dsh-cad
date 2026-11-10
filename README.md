@@ -4,386 +4,348 @@
 [![npm](https://img.shields.io/npm/v/dsh-cad?logo=npm)](https://www.npmjs.com/package/dsh-cad)
 [![awesome-dsh-plugin](https://img.shields.io/static/v1?label=awesome-dsh-plugin&message=listed&color=blue)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
-**One MCP server and one skill that let a DeepSeek Harness or Codex agent drive real AutoCAD.**
-They wire up the existing open-source [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP)
-project so an agent can draw in AutoCAD and export the result. This repository is the
-configuration layer: an isolated environment, launch parameters, on-demand loading and client
-registration. It does not fork, patch or repackage the server. Upstream hides its catalogue behind
-its own discovery mode, so this repository configures it rather than shipping a shim.
+**一个 MCP 服务器 + 一个 Skill，让 DeepSeek Harness 或 Codex 的 agent 真正操控 AutoCAD。**
+它封装了现成的开源项目 [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP)，
+让 agent 能在 AutoCAD 里画图并把结果导出。本仓库是**配置层**：隔离环境、启动参数、按需加载、
+客户端注册。它不 fork、不魔改、不重新分发这个服务器。上游自带 discovery 模式，所以本仓库
+不再提供垫片，只负责把它配置起来。
 
-English | [中文](README.zh.md)
+## 它做什么，什么时候需要它
 
-## What it does, and when you want it
+一个能"看懂"图纸的 CLI agent 有用，一个能"产出"图纸的 agent 是另一回事。装上本配置包后，dsh 或 Codex
+能接住这样一句话——"按 ISO A3 图框画一个 M6 螺纹孔支座，标注后导出 PDF"——并且真的做出来：建图层、画几何、
+标尺寸、盖标题栏、跑验证器，最后把文件交给你。
 
-A CLI agent that can read a drawing is useful. One that can *produce* one is a different tool. With this
-kit installed, dsh or Codex can take a sentence like "draw an M6 threaded-hole bracket on an ISO A3 sheet
-and export PDF" and actually do it — create layers, draw geometry, dimension it, stamp a title block,
-run a validator, and hand back a file.
+代价和所有 COM 自动化一样：**AutoCAD 必须开着，agent 必须和 AutoCAD 同 Windows 用户、同完整性级别运行。**
+这不是云服务，原生 `.dwg` 输出也没有无头替代方案。
 
-The catch is the same as every COM automation: **AutoCAD must be running, and the agent must run as the
-same Windows user and integrity level as AutoCAD.** This is not a cloud service and there is no headless
-substitute for native `.dwg` output.
+一个 Skill 是入口。它按需加载——只有当请求命中 SKILL.md 的 description 时才被读取，所以空闲会话不为此
+付出任何上下文成本：
 
-One skill is the entry point. It loads lazily — the SKILL.md is read only when a request matches its
-description, so an idle session pays nothing for it:
-
-| Skill | How it works |
+| Skill | 工作方式 |
 |---|---|
-| `autocad-mcp-pro` | Authored here (upstream ships no AutoCAD skill). Drives the AutoCAD MCP through its two meta-tools |
+| `autocad-mcp-pro` | 本仓库原创（上游没有 AutoCAD skill），通过两个元工具驱动 AutoCAD MCP |
 
-One MCP server is the muscle, registered in the client config:
+一个 MCP 服务器是肌肉，注册在客户端配置里：
 
-| Server | Tools advertised | Idle cost | Mode |
+| 服务器 | 广告工具数 | 空闲成本 | 模式 |
 |---|---:|---:|---|
-| `autocad` | 2 | 365 tokens | Upstream `DISCOVERY_MODE=search`: only `search_tools` + `call_tool`; the 242-tool catalog is searched by keyword |
+| `autocad` | 2 | 365 token | 上游自带 `DISCOVERY_MODE=search`：只广告 `search_tools` + `call_tool`，242 个工具的目录按关键词检索 |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/token-cost-dark.svg">
-  <img alt="Bar chart of idle context cost: AutoCAD direct 83,732 tokens, this kit 365" src="docs/token-cost-light.svg">
+  <img alt="常驻上下文成本柱状图：AutoCAD 直连 83,732 token，本仓库配置 365" src="docs/token-cost-light.svg">
 </picture>
 
-*Tool schemas are paid for before the first request. Connected directly the server costs 83,732 tokens;
-through this kit it costs 365, a 99.6% cut. Both are measured the same way: the `tools/list` bytes on the
-wire, counted with `cl100k_base`.*
+*工具定义是在你提出第一个请求之前就要付掉的。直连要 83,732 token，走本仓库这套配置是 365，
+省 99.6%。两边用的是同一种测法：线上 `tools/list` 的字节数，用 `cl100k_base` 计数。*
 
 ```
-you speak natural language
+你说人话
    │
-   ├─ dsh / Codex lazily loads a skill by its SKILL.md description
+   ├─ dsh / Codex 按 SKILL.md 的 description 按需加载 Skill
    │      └─ autocad-mcp-pro   → search_tools / call_tool → MCP → AutoCAD
    │
-   └─ MCP server (cordis.patch.yml / codex config.toml)
-          └─ autocad   upstream discovery mode, 242 tools on demand
+   └─ MCP 服务器（cordis.patch.yml / codex config.toml）
+          └─ autocad   上游 discovery 模式，242 工具按需检索
 ```
 
-## What is upstream, what is ours
+## 哪些是上游的，哪些是本仓库的
 
-This matters more than usual here, because the server is other people's work. The split is:
+这一点在这里比通常更重要——服务器是别人的成果。分工如下：
 
-| Part | Origin | License |
+| 部分 | 来源 | 许可证 |
 |---|---|---|
-| AutoCAD MCP server (`autocad-mcp-pro`) | [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP), installed from PyPI | MIT |
-| `skills/autocad-mcp-pro/SKILL.md` | Authored here — upstream has no AutoCAD skill | MIT |
-| `bin/`, `lib/` (including `probe.py`, which checks for the AutoCAD COM server), `package.json`, `cordis.patch.yml`, `install.ps1`, `bootstrap.ps1`, `codex-config.snippet.toml`, `assets/`, READMEs | Authored here | MIT |
+| AutoCAD MCP 服务器（`autocad-mcp-pro`） | [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP)，从 PyPI 安装 | MIT |
+| `skills/autocad-mcp-pro/SKILL.md` | 本仓库原创——上游没有 AutoCAD skill | MIT |
+| `bin/`、`lib/`（含探测 AutoCAD COM 服务器的 `probe.py`）、`package.json`、`cordis.patch.yml`、`install.ps1`、`bootstrap.ps1`、`codex-config.snippet.toml`、`assets/`、README | 本仓库原创 | MIT |
 
-**Nothing upstream is vendored.** The installer fetches the PyPI package at install time, so you always
-get upstream's current code and upstream keeps ownership of it. The value this repository adds is the
-part that was missing: verified launch parameters, the discovery-mode configuration, the on-demand
-skill wiring, the junction trick that keeps gigabytes off C:, and an installer that keeps the runtime
-off the system drive.
+**上游代码一行都没有进仓库。** 安装脚本在运行时才去 PyPI 取包，所以你拿到的永远是上游当前版本，
+著作权也始终归上游。本仓库补的是它缺失的那一层：经过验证的启动参数、discovery 模式配置、
+按需 Skill 接线、把几个 G 的依赖挡在 C 盘之外的 junction 技巧，以及一个把运行时留在数据盘的安装器。
 
-**One exception, and it is deliberate:** `patches/` carries two fixes for upstream defects that are
-silent — a vertical linear dimension measures 0.0, and an angular dimension's DXF sweep disagrees with
-its COM measurement. Both are open as a pull request upstream; until it lands, `install.ps1` applies
-the patches to the installed copy and `bootstrap.ps1` reports whether they are in place. See
-[`patches/README.md`](patches/README.md).
+**有一个例外，而且是故意的：** `patches/` 装着两个上游缺陷的修复——竖向线性标注量出来是 0.0，
+以及角度标注在 DXF 里的扫角与 COM 的测量值不一致，两者都不报错。修复已向上游提 PR；在合并之前，
+`install.ps1` 会把补丁打到已安装的副本上，`bootstrap.ps1` 会报告补丁是否在位。
+详见 [`patches/README.md`](patches/README.md)。
 
-## Install
+## 安装
 
-Three ways in. Pick one, then check the prerequisites at the end of this section.
+三条路，挑一条。装之前先看本节末尾的前置条件。
 
-### 1. As a dsh plugin (recommended)
+### 1. 作为 dsh 插件安装（推荐）
 
 ```bash
 dsh plugin --profile web add dsh-cad
 ```
 
-That is the whole install. `package.json` declares `dsh.bundle.patch`, so dsh picks up this
-repository's `cordis.patch.yml`, which inserts one row: this package. The package is a real cordis
-plugin (`lib/index.js`), not a wrapper around a binary, so dsh imports it from the profile and
-nothing has to be on PATH.
+这就是全部。`package.json` 里声明了 `dsh.bundle.patch`，dsh 会读到本仓库的 `cordis.patch.yml`，
+它只插入一行：这个包本身。包是一个真正的 cordis 插件（`lib/index.js`），不是包着一个可执行文件的壳，
+所以 dsh 直接从 profile 里 import 它，不需要任何东西在 PATH 上。
 
-On first load the plugin resolves its own paths, installs the pinned upstream server if it is
-missing (a few minutes, once), and then registers the MCP client with absolute paths. If the
-install cannot succeed it throws with the failing path and the command to re-run, instead of
-registering a row that would fail silently. `CAD_NO_AUTO_INSTALL=1` turns the automatic install off
-and surfaces the missing piece as an error instead.
+首次加载时插件会自己解析路径，缺上游就把**钉死版本**的上游装好（几分钟，只一次），然后注册 MCP
+客户端（绝对路径）。装不上就直接抛错，带上缺失的路径和重跑的命令——而不是注册一行起不来的配置，
+让人以为装好了却没有工具。设 `CAD_NO_AUTO_INSTALL=1` 可以关掉自动安装，把缺失项变成一条明确的报错。
 
-### 2. npm, global (adds the CLI)
+### 2. npm 全局安装（附带 CLI）
 
 ```bash
 npm install -g dsh-cad
 dsh-cad install
 ```
 
-Same result, plus `dsh-cad` on PATH for `doctor`, `where` and `serve` — useful when you want to
-check the install without booting dsh.
+结果一样，额外把 `dsh-cad` 放进 PATH，可以用 `doctor`、`where`、`serve`——不想启动 dsh 就想先查一下
+装没装好时有用。
 
-### 3. Without npm: `bootstrap.ps1`
+### 3. 不用 npm：`bootstrap.ps1`
 
 ```powershell
 git clone https://github.com/echogyf/dsh-cad.git
 cd dsh-cad
-.\bootstrap.ps1 -Check     # report only, changes nothing; exits 1 if something is missing
-.\bootstrap.ps1            # install whatever is missing
+.\bootstrap.ps1 -Check     # 只检测，不改动；缺东西时退出码为 1
+.\bootstrap.ps1            # 缺什么装什么
 ```
 
-It inspects each piece and repairs only what is absent or stale:
+它逐项检查，只修缺失或过期的部分：
 
-| Check | Fixed by |
+| 检查项 | 由谁修复 |
 |---|---|
-| Python ≥ 3.11 | nothing — it reports the problem and stops |
+| Python ≥ 3.11 | 不修——报出问题就停 |
 | `venv-autocad` + `autocad-mcp-pro` | `install.ps1` |
-| `~/.dsh/skills` junction | created |
-| dsh profile bundle entry | `install.ps1` (backs the file up first) |
-| `~/.codex/skills` junction | created |
-| `~/.codex/config.toml` entry | appended, with a backup |
-| upstream patches | `install.ps1` / `bootstrap.ps1` |
+| `~/.dsh/skills` junction | 创建 |
+| dsh profile 里的 bundle 条目 | `install.ps1`（先备份） |
+| `~/.codex/skills` junction | 创建 |
+| `~/.codex/config.toml` 条目 | 追加（先备份） |
+| 上游补丁 | `install.ps1` / `bootstrap.ps1` |
 
-Running it twice is a no-op. It exits `0` when everything is in place and `1` otherwise, so it is safe to
-wrap in a script or hand to an agent. Nothing is downloaded unless a core piece is actually missing.
+跑第二次是空操作。全部就绪时退出码 `0`，否则 `1`，所以可以放心塞进脚本或交给 agent。
+除非核心组件真的缺失，否则不会下载任何东西。
 
 > [!WARNING]
-> Route 3 also writes `~/.dsh/cordis.patch.yml`. If you installed the plugin as well, that is a second
-> registration of the same server under the same `serverName`, and dsh refuses the duplicate — the
-> session fails to start. Use one route or the other, not both: with the plugin installed, keep
-> `~/.dsh/cordis.patch.yml` at `[]`.
+> 第 3 条路还会写 `~/.dsh/cordis.patch.yml`。如果你同时又装了插件，那就是用同一个 `serverName` 把同一个
+> 服务器注册了第二遍，dsh 会拒绝重复注册，会话直接起不来。两条路只能走一条：装了插件就把
+> `~/.dsh/cordis.patch.yml` 留成 `[]`。
 
-### Commands
+### 命令一览
 
-| Command | What it does |
+| 命令 | 作用 |
 |---|---|
-| `dsh-cad install` | install the pinned upstream server and write `~/.dsh/cad.json` |
-| `dsh-cad doctor` | report present/missing pieces and the pinned version, change nothing, exit 1 if something is missing |
-| `dsh-cad where` | print every path the server will use |
-| `dsh-cad serve autocad` | run the MCP server over stdio, for manual testing |
+| `dsh-cad install` | 装钉死版本的上游服务器，并写 `~/.dsh/cad.json` |
+| `dsh-cad doctor` | 报告哪些有、哪些缺，并打印钉死的版本；不改动，缺东西时退出码 1 |
+| `dsh-cad where` | 打印服务器会用到的每一条路径 |
+| `dsh-cad serve autocad` | 以 stdio 跑 MCP 服务器，用于手动测试 |
 
-`install` is idempotent, and the plugin runs it for you on first load. The version is pinned in
-`lib/upstream.json` — `autocad-mcp-pro` 1.6.0 — so a machine that installs today and one that installs
-next month get the same server.
+`install` 是幂等的，而且插件首次加载时会自动跑一遍。版本钉在 `lib/upstream.json`——`autocad-mcp-pro`
+1.6.0——所以今天装和一个月后装，拿到的是同一个服务器。
 
 > [!TIP]
-> **Rather not run any of this yourself?** Paste the block below into dsh, Codex, or any agent that can
-> run commands on this machine. It carries everything the agent needs, so you can read the rest of this
-> section only if something goes wrong.
+> **不想自己敲这些命令？** 把下面这段发给你的 agent（dsh、Codex，或任何能在这台机器上跑命令的 agent），
+> 它会替你装完——后面几节只在出问题时才需要看。
 
 ```text
-Install https://github.com/echogyf/dsh-cad on this Windows machine.
+在这台 Windows 机器上安装 https://github.com/echogyf/dsh-cad。
 
-Run: npm install -g dsh-cad && dsh-cad install
-That installs the package, then the upstream AutoCAD MCP server plus the client
-entry. dsh-cad install is idempotent and only touches what is missing.
+运行：npm install -g dsh-cad && dsh-cad install
+第一条装包，第二条装上游 AutoCAD MCP 服务器并写好客户端条目。
+dsh-cad install 是幂等的，只补缺失的部分。
 
-Do not run it elevated: it must run as the same Windows user as AutoCAD.
-It writes nothing on C: except ~/.dsh and ~/.codex, and never touches the
-AutoCAD installation or the registry.
-Then verify with: dsh-cad doctor, dsh --profile headless --dump-config, codex mcp list.
-Report any step that fails instead of silently working around it.
+不要提权运行：它必须和 AutoCAD 是同一个 Windows 用户。
+除 ~/.dsh 与 ~/.codex 之外不要往 C 盘写东西，也不要动 AutoCAD 安装目录和注册表。
+装完用 dsh-cad doctor、dsh --profile headless --dump-config、codex mcp list 验证。
+哪一步失败就如实报告，不要自己绕过。
 ```
 
-### Prerequisites
+### 前置条件
 
-- Windows 10/11 with AutoCAD installed
-- Python ≥ 3.11 on PATH (`python --version`)
-- dsh (DeepSeek Harness) or Codex CLI; Node ≥ 20 for routes 1 and 2
+- Windows 10/11，已安装 AutoCAD
+- PATH 里有 Python ≥ 3.11（`python --version`）
+- dsh（DeepSeek Harness）或 Codex CLI；第 1、2 条路还需要 Node ≥ 20
 
-### What if AutoCAD is not installed
+### 机器上没装 AutoCAD 会怎样
 
-The plugin checks for the AutoCAD COM server before registering anything (`lib/probe.py`, a registry
-ProgID lookup — it does not launch the application). A machine without AutoCAD registers nothing and
-says so in the log instead of offering tools that could only fail.
+注册之前插件会先查 AutoCAD 的 COM 服务器（`lib/probe.py`，查注册表 ProgID，不会启动应用）。
+没装就一行都不注册，并在日志里说明——而不是放一个只能失败的工具在那里。
 
 ```
 [dsh-cad] autocad: no COM server registered on this machine, not registering it
 ```
 
-`CAD_DISABLE=autocad` turns that decision into a setting, `CAD_ASSUME=autocad` forces it on when the
-registry probe is wrong, and `dsh-cad doctor` prints what the probe found without starting dsh.
+`CAD_DISABLE=autocad` 可以把这个判断改成显式设置，`CAD_ASSUME=autocad` 可以在注册表探测不准时强制开启，
+`dsh-cad doctor` 会在不启动 dsh 的情况下打印探测结果。
 
-Note that *installed* is not the same as *running*. AutoCAD registered but closed means the AutoCAD
-tools wait for the application and then fail with a message about a modal dialog. Starting AutoCAD as
-the same Windows user as your agent is the last step of any install.
+另外，**装过**不等于**开着**。AutoCAD 注册过但没启动，工具会一直等应用响应，最后报一条“可能有模态
+对话框”的错。所以把 AutoCAD 以与 agent 同一个 Windows 用户启动，是安装之后最后要做的一步。
 
-### Version support
+### 版本支持
 
-Upstream verifies against a single release but writes for a range. The honest picture:
+上游是"按一个版本验收、按一个区间写代码"，实际情况是：
 
-| CAD | Verified | Expected to work | Why |
+| CAD | 已验证 | 预期可用 | 依据 |
 |---|---|---|---|
-| AutoCAD | 2026 (every COM path, live run), 2027 (API compatible) | 2025 / 2024 / 2023 | COM goes through the long-stable ActiveX API. Run the upstream `scripts\smoke_*_com.py` against your build to confirm. And if COM cannot do something on your version, the ezdxf backend still can — it needs no AutoCAD at all. |
+| AutoCAD | 2026（所有 COM 路径真机跑过）、2027（API 兼容） | 2025 / 2024 / 2023 | COM 走的是长期稳定的 ActiveX 接口。想确认你的版本，跑上游的 `scripts\smoke_*_com.py`。另外某个功能在你这版 COM 上做不了时，ezdxf 后端照样能做——它根本不需要 AutoCAD。 |
 
-Older versions are not refused — nothing checks a version number. They are simply outside what upstream
-verified, so start with one small job and look at the result before trusting a full drawing.
+老版本不会被拒绝——代码里没有任何版本号检查。它们只是不在上游的验证范围内，所以**先拿一个小任务试，看过结果再信任整张图**。
 
-**What this package itself has run.** The live verification below was done on AutoCAD 2026 in October
-2026; it is the only AutoCAD build this package has been run against.
+**这个包自己实际跑过什么。** 下面的真机验证是 2026 年 10 月在 AutoCAD 2026 上做的；它也是本包唯一跑过的 AutoCAD 版本。
 
-### Appendix — upstream's own install steps
+### 附录 —— 上游自己的安装步骤
 
-These are the upstream project's own instructions. This is also what `install.ps1` automates, so read it
-if you want to understand or debug the install.
+下面就是上游项目自己的安装说明。`install.ps1` 自动化的也是这些步骤，所以想理解或排查安装过程时看这一节。
 
-**AutoCAD MCP server** — [upstream install](https://github.com/U-C4N/Autocad-MCP#install). Into a venv on
-the data drive (recommended here):
+**AutoCAD MCP 服务器** —— [上游安装说明](https://github.com/U-C4N/Autocad-MCP#install)。装进数据盘上的 venv
+（本仓库推荐做法）：
 
 ```powershell
 python -m venv D:\cad-agents\venv-autocad
 D:\cad-agents\venv-autocad\Scripts\python.exe -m pip install "autocad-mcp-pro[full]"
-D:\cad-agents\venv-autocad\Scripts\autocad-mcp.exe --help    # stdio server entry point
+D:\cad-agents\venv-autocad\Scripts\autocad-mcp.exe --help    # stdio 服务器入口
 ```
 
-Upstream's own one-liners, if you do not want a venv:
+不建 venv 的话，上游自己的一行式安装：
 
 ```bash
-pip install autocad-mcp-pro              # or: uvx autocad-mcp-pro
-autocad-mcp                              # backend auto-selected
-AUTOCAD_MCP_BACKEND=ezdxf autocad-mcp    # headless DXF, no AutoCAD needed
-AUTOCAD_MCP_BACKEND=com   autocad-mcp    # live AutoCAD (needs the [com] extra)
+pip install autocad-mcp-pro              # 或：uvx autocad-mcp-pro
+autocad-mcp                              # 后端自动选择
+AUTOCAD_MCP_BACKEND=ezdxf autocad-mcp    # 无头 DXF，不需要 AutoCAD
+AUTOCAD_MCP_BACKEND=com   autocad-mcp    # 实控 AutoCAD（需要 [com] extra）
 ```
 
-Extras: `[com]` = live AutoCAD control (pywin32 + Pillow), `[pdf]` = matplotlib for PDF/PNG output,
-`[office]` = openpyxl for XLSX takeoffs, `[full]` = all of them. Upstream also documents an HTTP
-transport (`autocad-mcp --transport http --port 8000`) and a JSON config for Claude Desktop / Cursor.
+extras 含义：`[com]` = 实控 AutoCAD（pywin32 + Pillow），`[pdf]` = matplotlib（PDF/PNG 输出），
+`[office]` = openpyxl（XLSX 算量），`[full]` = 以上全部。上游还文档化了 HTTP 传输
+（`autocad-mcp --transport http --port 8000`）以及 Claude Desktop / Cursor 的 JSON 配置写法。
 
-**Register the server with your client.** dsh reads `~/.dsh/cordis.patch.yml` — copy this repository's
-`cordis.patch.yml` there. It inserts one row — this package — and the plugin registers the server
-itself, so nothing has to be on PATH (`npm install -g dsh-cad`). Codex reads `~/.codex/config.toml` —
-append `codex-config.snippet.toml`. The Codex snippet contains absolute paths, so adjust those to your
-`-BaseDir`.
+**把服务器注册到客户端。** dsh 读 `~/.dsh/cordis.patch.yml`——把本仓库的 `cordis.patch.yml` 拷过去即可。
+它只插入一行——这个包本身——由插件自己去注册服务器，所以不需要任何东西在 PATH 上
+（`npm install -g dsh-cad`）。Codex 读 `~/.codex/config.toml`——追加 `codex-config.snippet.toml`。
+Codex 那份里是绝对路径，要按你的 `-BaseDir` 改。
 
-**Make the skill visible.** Both clients only scan their own skills directory:
+**让 Skill 可见。** 两个客户端都只扫自己的技能目录：
 
 ```powershell
-# dsh: one junction for the whole skills folder (matches what install.ps1 does)
+# dsh：整个 skills 目录做一个 junction（与 install.ps1 行为一致）
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.dsh" | Out-Null
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\skills" -Target "D:\cad-agents\dsh-skills"
 
-# Codex: one junction per skill (its skills folder may hold other skills)
+# Codex：每个 skill 单独 junction（它的 skills 目录里可能还有别的技能）
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.codex\skills" | Out-Null
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.codex\skills\autocad-mcp-pro" -Target "D:\cad-agents\dsh-skills\autocad-mcp-pro"
 ```
 
-### Appendix — what `install.ps1` does
+### 附录 —— `install.ps1` 干了什么
 
-`install.ps1` runs everything in the appendix above, plus the parts that are easy to get wrong: the venv
-on the data drive, the junctions, the discovery-mode parameters, and a timestamped backup of the dsh
-profile package.
+`install.ps1` 会把上面附录里的事全跑一遍，外加那些容易做错的部分：venv 落在数据盘、junction 接线、
+discovery 模式参数、以及 dsh profile package.json 的带时间戳备份。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 
-# custom locations / force rebuild
+# 自定义位置 / 强制重建
 .\install.ps1 -BaseDir "E:\cad" -WorkDir "E:\AutoCad" -Force
 ```
 
-It checks Python, creates the directories, builds the venv, installs `autocad-mcp-pro[full]`, applies
-`patches/` to the installed copy, junctions the skill into `~/.dsh/skills`, writes the dsh profile entry,
-and drops the AutoCAD skill in place.
+它依次检查 Python、建目录、建 venv、装 `autocad-mcp-pro[full]`、把 `patches/` 打到已安装的副本上、
+junction 进 `~/.dsh/skills`、写 dsh profile 条目、落下 AutoCAD skill。
 
-If you are not sure what is already on the machine, run `bootstrap.ps1` instead: it decides whether
-`install.ps1` is needed at all.
+不确定机器上已经装了什么的话，用 `bootstrap.ps1`：它自己会判断需不需要跑 `install.ps1`。
 
-**Codex users still need one step** — append `codex-config.snippet.toml` to `~/.codex/config.toml` and
-junction the skill into `~/.codex/skills/` (last two commands of the appendix above).
+**Codex 用户仍需一步**——把 `codex-config.snippet.toml` 追加到 `~/.codex/config.toml`，并把 skill
+junction 进 `~/.codex/skills/`（即附录里的最后两条命令）。
 
 > [!IMPORTANT]
-> **Start AutoCAD first, as the same user.** COM automation crosses a process boundary that Windows
-> guards by user and integrity level. An agent started elevated while AutoCAD runs normally (or vice
-> versa) will connect to nothing, and the failure looks like "the tool did nothing".
+> **先开 AutoCAD，并且同用户启动。** COM 自动化要跨一个被 Windows 按用户和完整性级别守护的进程边界。
+> 如果 agent 以管理员身份启动、AutoCAD 以普通身份运行（或反过来），它什么也连不上，而失败现象看起来只是
+> "工具什么都没干"。
 >
-> This rule is specific to COM. [`dsh-nx`](https://github.com/27painter/dsh-nx) drives NX through
-> NXOpen, which runs inside the NX process — an open NX window cannot be attached to there, so that
-> plugin starts its own batch session and must **not** be pre-opened. Do not carry this habit across.
+> 这条只适用于 COM。[`dsh-nx`](https://github.com/27painter/dsh-nx) 走的是 NXOpen，跑在 NX 进程
+> 内部——那边的窗口挂不上去，所以那个插件自己起批处理会话，**不要**预先打开 NX。这个习惯不要照搬。
 
-## Usage
+## 使用
 
-Just describe the drawing. The skill loads itself.
+直接描述要画的东西，Skill 会自己加载。
 
 ```text
-Open AutoCAD, draw a bearing housing: base 120×80×10, upright 60 high × 12 thick,
-φ40 through hole on top. ISO A3 sheet with title block and dimensions, save to
-D:\AutoCad and export PDF.
+用 AutoCAD 画一个轴承座：底座 120×80×10，立板高 60 厚 12，顶部 φ40 通孔。
+ISO A3 图框带标题栏和尺寸标注，存到 D:\AutoCad 并导出 PDF。
 ```
 
-Practical notes, learned the hard way:
+几条踩过坑的经验：
 
-- **AutoCAD tools take flat arguments.** A call looks like
-  `call_tool(name="entity_create_line", arguments={"x1": 0, "y1": 0, "x2": 100, "y2": 0})`.
-- **Ask for a plan first on anything complex.** The skill has a planning step; approving a plan before
-  geometry is drawn is cheaper than undoing a bad drawing.
-- **Ask for the preview.** The AutoCAD path ends in an 8-step validator plus a screenshot. "Show me the
-  preview" is a fair request and the skill honors it. One caveat, measured here: the AutoCAD screenshot
-  needs the window to be visible — with AutoCAD hidden or minimised it comes back blank. The geometry
-  itself is always verifiable through the API (handles, bounding boxes, mass properties), so do not
-  treat a blank image as a failed drawing.
+- **AutoCAD 的工具参数是平铺的。** 调用长这样：
+  `call_tool(name="entity_create_line", arguments={"x1": 0, "y1": 0, "x2": 100, "y2": 0})`。
+- **复杂任务先要计划。** Skill 有规划环节；在画几何之前先审计划，比画错了再撤销便宜。
+- **主动要预览。** AutoCAD 路线最后有 8 步验证器加截图。说一句"把预览图给我看"是合理要求，Skill 会照做。
+  一个实测过的注意事项：AutoCAD 的截图需要窗口可见——隐藏或最小化时拿回来是空白图。几何本身始终可以
+  通过 API 验证（handle、包围盒、质量属性），所以别把空白截图当成画错了。
 
-## Verification
+## 验证
 
 ```powershell
-# everything present? read-only, exits 1 if something is missing
+# 该装的都装了吗？只读检测，缺东西时退出码 1
 dsh-cad doctor
 
-# every path the server will use
+# 服务器会用到的每一条路径
 dsh-cad where
 
-# dsh sees the server and the skill
-pnpm dsh --profile headless --dump-config
-pnpm dsh --profile headless "list available skills"
-
-# are the upstream patches still in place? read-only, exits 1 when one drifted
+# 上游补丁还在不在位？只读检测，有一条漂了就退出码 1
 python patches\apply_patches.py --check
 
-# the MCP server answers a handshake through the same entry point dsh uses
-node bin\dsh-cad.mjs serve autocad        # expects AutoCAD MCP Pro, 2 entry tools
+# dsh 是否看见服务器和技能
+pnpm dsh --profile headless --dump-config
+pnpm dsh --profile headless "列出当前可用的 skill"
+
+# 用 dsh 实际调用的同一个入口，验证服务器能握手
+node bin\dsh-cad.mjs serve autocad        # 应为 AutoCAD MCP Pro，2 个入口工具
 
 # Codex
 codex mcp list
 ```
 
-What was verified before publishing in October 2026, against a live application (AutoCAD 2026 running
-at the time): `system_status` returns `connected: true`, `backend: com`, the running version and the
-active document name; `drawing_info` returns the open document's entity count, extents and units;
-`layer_list` returns the live layer table. The `serve` target also answers a JSON-RPC handshake through
-the package's own binary — the AutoCAD server reports `AutoCAD MCP Pro 3.4.11` (the pip package is
-1.6.0, the server carries its own version) and advertises 2 entry tools. Discovery finds
-`gear_draw_spur_front_view` / `keyway_draw_keyed_bore` by keyword; `dsh --dump-config` loads the row
-from this package.
+发布前实际验证过的（AutoCAD 2026 在运行）：`system_status` 返回 `connected: true`、`backend: com`、
+运行中的版本号和当前活动文档名；`drawing_info` 返回打开文档的实体数、范围与单位；`layer_list`
+返回实时的图层表。`serve` 目标也能通过包自带的入口完成 JSON-RPC 握手——AutoCAD 服务器自报
+`AutoCAD MCP Pro 3.4.11`（pip 包是 1.6.0，版本号在服务器侧是另一套），广告 2 个入口工具。
+discovery 能按关键词检索到 `gear_draw_spur_front_view` / `keyway_draw_keyed_bore`；
+`dsh --dump-config` 能从本包加载该行。
 
-## Design notes
+## 设计说明
 
-**1. Discovery mode is the whole trick.** 242 tool schemas cost 83,732 tokens if advertised. In discovery
-mode the client sees two tools (365 tokens) and searches a catalog that carries 206 AutoCAD command names
-plus 1439 synonyms — say "chamfer" and it finds `FILLET`.
+**1. discovery 模式是这套配置的核心。** 242 个工具定义全量广告是 83,732 token。discovery 模式下客户端只看到
+两个工具（365 token），检索目录里带 206 个 AutoCAD 命令名 + 1439 个同义词——说"倒角"能找到 `FILLET`。
 
-**2. Keep `TOOL_PROFILE=full` and `TOOL_PACKS=all`.** They only narrow the *searchable* catalog and do not
-change idle cost. Measured: `lean + core,mech` drops the catalog to 58 tools and makes the parametric gear
-and keyway tools unfindable. Narrowing packs loses capability without saving a token.
+**2. `TOOL_PROFILE` 保持 `full`、`TOOL_PACKS` 保持 `all`。** 它们只收缩"可检索目录"，不改变空闲成本。
+实测 `lean + core,mech` 会把目录砍到 58 个工具，参数化齿轮和键槽工具直接搜不到——收缩 packs 只丢能力，
+一个 token 也省不下。
 
-**3. Junctions, not copies.** dsh only scans `~/.dsh/skills`, Codex only scans `~/.codex/skills`. Directory
-junctions point both at the data drive; neither tool notices. Deleting a junction does not delete data.
+**3. 用 junction，不复制。** dsh 只扫 `~/.dsh/skills`，Codex 只扫 `~/.codex/skills`。目录联接把两边都指到
+数据盘，两个工具都无感知。删联接不删数据。
 
-**4. Scope the file access.** The AutoCAD server's `ALLOWED_PATHS` is empty by default, and its own README
-says to set it. This kit sets it to a working directory.
+**4. 把文件访问圈起来。** AutoCAD 服务器的 `ALLOWED_PATHS` 默认是空的，它自己的 README 也要求你设置。
+本配置包把它设为一个工作目录。
 
-**5. Know what is verified.** The version table under Install says it plainly: upstream verified AutoCAD
-2026. Everything else is expected, not proven — run one small job first.
+**5. 分清什么验证过。** 安装章节的版本表写得很直白：上游验证过 AutoCAD 2026，其余都是"预期"而非"已证明"——先拿小任务试。
 
-**6. Discovery is not free, it is deferred.** Every tool call costs one extra round trip: search, then
-call. For a single "draw a box" that is slower than calling the upstream tool directly. It is the right
-trade when a session makes several calls, which is the normal case for CAD work.
+**6. discovery 不是免费，只是延后。** 每次调用多一个来回：先搜再调。只画一个方块时它比直连慢。但 CAD
+任务通常一次会话里要调好几个工具，这笔账是划算的。
 
-**7. It ships as a plugin, not as a bin the patch calls.** The first version registered an MCP client row
-whose `command` was `dsh-cad`, which only resolves when the package is installed globally — so
-`dsh plugin add` on its own left a row that could not start. A reviewer caught that, correctly.
-`lib/index.js` now imports as a cordis plugin and registers the client itself with an absolute path,
-which removes the PATH dependency and lets it check the upstream before registering anything.
+**7. 它是插件，不是 patch 调一个可执行文件。** 第一版注册的 MCP 客户端行，`command` 写的是
+`dsh-cad`——只有全局安装过才解析得到，于是单独跑 `dsh plugin add` 会留下起不来的配置。评审指出
+了这一点，指得对。现在 `lib/index.js` 本身就是一个 cordis 插件，由它自己用绝对路径注册客户端，
+PATH 依赖没了，也才有可能在注册之前先检查上游。
 
-**8. Pinned, because "latest" is not a version.** `lib/upstream.json` records the exact
-`autocad-mcp-pro` release this bundle was validated against; `install.ps1` uses it for the pip install.
-Bumping it is a deliberate commit.
+**8. 钉死版本，因为"最新"不是一个版本号。** `lib/upstream.json` 记录了这套配置验证时的确切
+`autocad-mcp-pro` 版本；`install.ps1` 的 pip 安装用它。改它就是一次刻意的提交。
 
-## Troubleshooting
+## 排障
 
-| Symptom | Cause / fix |
+| 现象 | 原因 / 处理 |
 |---|---|
-| dsh lists no skills | `~/.dsh/skills` must be a junction whose target exists; folder name must equal the frontmatter `name` |
-| Codex lists no skills | the junction under `~/.codex/skills\`; Codex must support skills |
-| AutoCAD tools return nothing | AutoCAD not running, or different user/integrity level; set `AUTOCAD_MCP_BACKEND=com` to rule out the ezdxf fallback |
-| `codex mcp list` empty | the snippet must sit at the end of `config.toml`; paths need doubled backslashes |
-| Vertical dimensions measure 0.0 | the upstream patch is not applied; run `python patches\apply_patches.py` |
-| Installer reports drift | upstream changed the anchor text; check whether the fix shipped, then update `patches/apply_patches.py` |
+| dsh 列不出 skill | `~/.dsh/skills` 必须是 junction 且目标存在；目录名必须等于 frontmatter 的 `name` |
+| Codex 列不出 skill | `~/.codex/skills\` 下的 junction 是否在；Codex 版本需支持 skills |
+| AutoCAD 工具调了没反应 | AutoCAD 没开，或用户/完整性级别不一致；设 `AUTOCAD_MCP_BACKEND=com` 排除 ezdxf 降级 |
+| `codex mcp list` 为空 | 追加段必须在 `config.toml` 末尾；路径要双反斜杠 |
+| 竖向标注量出来是 0.0 | 上游补丁没打上；运行 `python patches\apply_patches.py` |
+| 安装器报 drift | 上游改了锚点文本；先确认修复是否已发布，再更新 `patches/apply_patches.py` |
 
-## License
+## 许可证
 
-MIT (see [LICENSE](LICENSE)). Upstream components remain under their own MIT licenses; this repository
-redistributes neither.
+MIT（见 [LICENSE](LICENSE)）。上游组件保持各自 MIT 许可证，本仓库不重新分发它们。

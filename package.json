@@ -48,7 +48,6 @@
     "install.ps1",
     "codex-config.snippet.toml",
     "README.md",
-    "README.zh.md",
     "LICENSE",
     "!**/__pycache__",
     "!**/*.pyc",
