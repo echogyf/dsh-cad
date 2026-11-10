@@ -1,17 +1,17 @@
 {
-  "name": "dsh-sw-cad",
-  "version": "1.2.1",
-  "description": "Drives the installed AutoCAD and SolidWorks desktop apps from dsh or Codex: two on-demand skills plus two MCP servers, both using their upstream's own tool discovery (2 and 3 entry tools instead of 242 and 66).",
+  "name": "dsh-cad",
+  "version": "2.0.0",
+  "description": "Drives the installed AutoCAD desktop app from dsh or Codex using an isolated Python runtime, one skill and the upstream MCP server's search discovery.",
   "type": "module",
   "license": "MIT",
   "author": "27painter",
-  "homepage": "https://github.com/27painter/dsh-sw-cad",
+  "homepage": "https://github.com/echogyf/dsh-cad",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/27painter/dsh-sw-cad.git"
+    "url": "git+https://github.com/echogyf/dsh-cad.git"
   },
   "bugs": {
-    "url": "https://github.com/27painter/dsh-sw-cad/issues"
+    "url": "https://github.com/echogyf/dsh-cad/issues"
   },
   "keywords": [
     "deepseek-harness",
@@ -19,14 +19,13 @@
     "dsh-plugin",
     "mcp",
     "autocad",
-    "solidworks",
     "cad",
     "com",
     "windows",
     "ai-agent"
   ],
   "bin": {
-    "dsh-sw-cad": "bin/dsh-sw-cad.mjs"
+    "dsh-cad": "bin/dsh-cad.mjs"
   },
   "main": "lib/index.js",
   "exports": {
@@ -49,7 +48,6 @@
     "install.ps1",
     "codex-config.snippet.toml",
     "README.md",
-    "README.zh.md",
     "LICENSE",
     "!**/__pycache__",
     "!**/*.pyc",
@@ -70,7 +68,8 @@
     "@deepseek-ai/dsh-mcp-client": "0.2.0-rc.2"
   },
   "scripts": {
-    "check": "node bin/dsh-sw-cad.mjs doctor",
-    "test": "node test/plugin.test.mjs"
+    "check": "node bin/dsh-cad.mjs doctor",
+    "test": "node --test test/plugin.test.mjs test/python.test.mjs test/runtime.test.mjs",
+    "test:ps": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/powershell.test.ps1"
   }
 }

@@ -1,127 +1,105 @@
-// What the plugin registers, and what it refuses to register.
-//
-// Runs anywhere with Node: it imports the real MCP client when it is installed
-// (npm test installs it as a devDependency) and skips when it is not, so the
-// check never blocks on an environment that cannot resolve the peer.
-import assert from "node:assert";
+// Unit-test registration logic with an explicit peer double. The real DSH peer
+// is validated by the separately recorded desktop/AutoCAD integration test.
+import assert from "node:assert/strict";
+import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { createPlugin } from "../lib/plugin.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const pkgRoot = path.join(here, "..");
-
-let peer = null;
-try {
-  peer = await import("@deepseek-ai/dsh-mcp-client");
-} catch {
-  // A developer without devDependencies can skip; CI cannot — a skipped test
-  // that exits 0 is a green run that verified nothing.
-  if (process.env.CI) {
-    console.error("FAIL: @deepseek-ai/dsh-mcp-client missing in CI; run npm install first");
-    process.exit(1);
-  }
-  console.log("SKIP: @deepseek-ai/dsh-mcp-client is not installed (npm install)");
-  process.exit(0);
+const peer = { inject: ["tools"] };
+const base = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-cad-tests-plugin-"));
+const layout = {
+  baseDir: base, workDir: path.join(base, "drawings"), python: path.join(base, "base-python.exe"),
+  pythonSource: "dsh-runtime", pyAcad: path.join(base, "venv-autocad", "Scripts", "python.exe"),
+  acadExe: path.join(base, "venv-autocad", "Scripts", "autocad-mcp.exe"), backend: "com", progId: "AutoCAD.Application.25.1",
+};
+const envKeys = ["CAD_DISABLE", "CAD_ASSUME", "CAD_NO_AUTO_INSTALL"];
+function attempt({ env = {}, checkRuntime = () => ({ ok: true, issues: [] }), run = () => ({ status: 0, stdout: '{"autocad":true}' }), platform = "win32" } = {}) {
+  const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
+  for (const key of envKeys) { if (env[key] === undefined) delete process.env[key]; else process.env[key] = env[key]; }
+  const rows = [];
+  const plugin = createPlugin(peer, { checkRuntime, run, resolveLayout: () => layout, platform });
+  let error;
+  try { plugin.apply({ plugin: (mod, config) => rows.push({ mod, config }) }); }
+  catch (e) { error = e; }
+  finally { for (const key of envKeys) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; } }
+  return { rows, error, plugin };
 }
 
-const plugin = await import(pathToFileURL(path.join(pkgRoot, "lib", "index.js")).href);
+test("registers exactly one real-client instance with COM and absolute Python", () => {
+  const { rows, error, plugin } = attempt();
+  assert.ifError(error);
+  assert.equal(plugin.name, "dsh-cad");
+  assert.deepEqual(plugin.inject, peer.inject);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].mod, peer);
+  const cfg = rows[0].config;
+  assert.equal(cfg.serverName, "autocad");
+  assert.equal(cfg.transport, "stdio");
+  assert.equal(cfg.command, layout.pyAcad);
+  assert.deepEqual(cfg.args, ["-m", "server"]);
+  assert.equal(cfg.env.AUTOCAD_MCP_BACKEND, "com");
+  assert.equal(cfg.env.CAD_PROGID, layout.progId);
+  assert.equal(cfg.env.DISCOVERY_MODE, "search");
+  assert.equal(cfg.env.DISCOVERY_PINNED, "cad_batch,drawing_info,entity_list");
+  assert.equal(cfg.env.CAD_LAUNCH, "never");
+  assert.equal(cfg.env.ACADMCP_STATE_DIR, path.join(base, "state"));
+  assert.equal(cfg.env.LISP_POLICY, "read");
+  assert.equal(cfg.env.DANGEROUS_COMMANDS_ENABLED, "false");
+  assert.equal(cfg.env.TOOL_PACKS, "all");
+  assert.equal(cfg.env.ALLOWED_PATHS, layout.workDir);
+  assert.equal(cfg.failOnStartupError, true);
+  assert.equal(cfg.toolCallTimeoutMs, 180000);
+  assert.equal(cfg.reconnect.enabled, true);
+});
 
-assert.equal(plugin.name, "dsh-sw-cad", "the plugin must be loadable by package name");
-assert.equal(typeof plugin.apply, "function", "apply must be a function");
-assert.deepEqual(plugin.inject, peer.inject, "inject must match the MCP client's");
+test("disabled means no installation or probe, even with CAD_ASSUME", () => {
+  const result = attempt({ env: { CAD_DISABLE: "autocad", CAD_ASSUME: "autocad" }, checkRuntime: () => { throw new Error("must not inspect"); }, run: () => { throw new Error("must not spawn"); } });
+  assert.equal(result.rows.length, 0);
+  assert.match(result.error.message, /disabled/);
+});
 
-function attempt(env) {
-  const saved = {};
-  for (const k of Object.keys(env)) {
-    saved[k] = process.env[k];
-    if (env[k] === undefined) delete process.env[k];
-    else process.env[k] = env[k];
-  }
-  const registered = [];
-  const ctx = { plugin: (mod, cfg) => registered.push({ mod, cfg }) };
-  let err = null;
-  try {
-    plugin.apply(ctx);
-  } catch (e) {
-    err = e;
-  }
-  Object.assign(process.env, saved);
-  return { registered, err };
-}
+test("missing upstream with installation disabled never registers", () => {
+  const result = attempt({ env: { CAD_NO_AUTO_INSTALL: "1" }, checkRuntime: () => ({ ok: false, issues: ["missing Python"] }), run: () => { throw new Error("must not spawn"); } });
+  assert.match(result.error.message, /upstream missing/);
+  assert.equal(result.rows.length, 0);
+});
 
-// --- both CAD applications present -----------------------------------------
-// SW_CAD_ASSUME makes the expected result independent of what this machine
-// has installed: CI runners have neither AutoCAD nor SolidWorks.
-const both = attempt({ SW_CAD_DISABLE: undefined, SW_CAD_ASSUME: "autocad,solidworks" });
-for (const r of both.registered) {
-  assert.equal(r.mod, peer, "must register the MCP client itself");
-  assert.ok(path.isAbsolute(r.cfg.command), "command must be absolute, not a PATH name");
-  assert.equal(r.cfg.transport, "stdio");
-  assert.equal(r.cfg.failOnStartupError, true, "a server that cannot start must say so");
-}
-assert.deepEqual(both.registered.map((r) => r.cfg.serverName).sort(), ["autocad", "solidworks"]);
-// The SolidWorks row runs upstream's server directly and asks it for its own
-// discovery surface; there is no shim in between any more.
-const sw = both.registered.find((r) => r.cfg.serverName === "solidworks");
-assert.ok(sw, "solidworks row missing");
-assert.equal(sw.cfg.env.SW_MCP_DISCOVERY, "search", "must ask upstream for discovery mode");
-assert.ok(sw.cfg.args.length === 1 && sw.cfg.args[0].endsWith("server.py"),
-  `the solidworks row should run server.py alone, got: ${JSON.stringify(sw.cfg.args)}`);
-console.log("both installed  ->", both.registered.map((r) => r.cfg.serverName).sort().join(", "));
+test("missing COM is refused instead of handing the agent broken tools", () => {
+  const result = attempt({ run: () => ({ status: 0, stdout: '{"autocad":false}' }) });
+  assert.equal(result.rows.length, 0);
+  assert.match(result.error.message, /COM server/);
+});
 
-// --- one side disabled ------------------------------------------------------
-const noAcad = attempt({ SW_CAD_DISABLE: "autocad", SW_CAD_ASSUME: "autocad,solidworks" });
-assert.deepEqual(noAcad.registered.map((r) => r.cfg.serverName), ["solidworks"]);
-console.log("autocad off     -> solidworks only");
+test("CAD_ASSUME is explicit and avoids the COM probe", () => {
+  const result = attempt({ env: { CAD_ASSUME: "autocad" }, run: () => { throw new Error("probe must be skipped"); } });
+  assert.ifError(result.error);
+  assert.equal(result.rows.length, 1);
+});
 
-const noSw = attempt({ SW_CAD_DISABLE: "solidworks", SW_CAD_ASSUME: "autocad,solidworks" });
-assert.deepEqual(noSw.registered.map((r) => r.cfg.serverName), ["autocad"]);
-console.log("solidworks off  -> autocad only");
+test("installer is runtime-only, carries pin, then health is rechecked", () => {
+  let checks = 0;
+  const calls = [];
+  const result = attempt({ env: { CAD_ASSUME: "autocad" }, checkRuntime: () => ({ ok: ++checks > 1, issues: ["not installed"] }), run: (exe, args, options) => { calls.push({ exe, args, options }); return { status: 0 }; } });
+  assert.ifError(result.error);
+  assert.equal(checks, 2);
+  assert.ok(calls[0].args.includes("-RuntimeOnly"));
+  assert.ok(calls[0].args.includes("-SkipCodex"));
+  assert.ok(calls[0].args.includes("-AutocadVersion"));
+  assert.equal(calls[0].options.stdio, "inherit");
+});
 
-// --- nothing left to drive: throw, do not register rows that cannot work ---
-const none = attempt({ SW_CAD_DISABLE: "autocad,solidworks", SW_CAD_ASSUME: "autocad,solidworks" });
-assert.equal(none.registered.length, 0, "must not register rows that cannot start");
-assert.ok(none.err, "must throw when nothing is left to drive");
-assert.match(none.err.message, /neither AutoCAD nor SolidWorks/i);
-console.log("neither off     -> throws, registers nothing");
+test("failed installer and non-Windows hosts register nothing", () => {
+  const failed = attempt({ checkRuntime: () => ({ ok: false, issues: ["missing"] }), run: () => ({ status: 9 }) });
+  assert.match(failed.error.message, /exit 9/);
+  assert.equal(failed.rows.length, 0);
+  const other = attempt({ platform: "linux" });
+  assert.match(other.error.message, /Windows/);
+  assert.equal(other.rows.length, 0);
+});
 
-// Detection path: with nothing assumed and nothing registered, refuse rather
-// than register a row that cannot start. Skipped on a machine that has CAD.
-const bare = attempt({ SW_CAD_DISABLE: undefined, SW_CAD_ASSUME: undefined });
-if (bare.registered.length === 0) {
-  assert.ok(bare.err, "must throw when nothing is detected");
-  console.log("nothing detected -> throws, registers nothing");
-} else {
-  console.log("nothing detected -> skipped (this machine has CAD installed)");
-}
-
-// --- a machine with no upstream installed is an error, not a silent skip ----
-const empty = fs.mkdtempSync(path.join(os.tmpdir(), "swcad-test-"));
-try {
-  const saved = process.env.SW_CAD_BASE;
-  const savedNoInstall = process.env.SW_CAD_NO_AUTO_INSTALL;
-  process.env.SW_CAD_BASE = empty;
-  process.env.SW_CAD_NO_AUTO_INSTALL = "1";
-  const registered = [];
-  const ctx = { plugin: (m, c) => registered.push(c) };
-  let err = null;
-  try {
-    plugin.apply(ctx);
-  } catch (e) {
-    err = e;
-  }
-  assert.equal(registered.length, 0, "must not register anything when the upstream is missing");
-  assert.ok(err, "must throw when the upstream is missing and auto-install is off");
-  assert.match(err.message, /upstream missing/i);
-  console.log("no upstream     -> throws, registers nothing");
-  if (saved === undefined) delete process.env.SW_CAD_BASE;
-  else process.env.SW_CAD_BASE = saved;
-  if (savedNoInstall === undefined) delete process.env.SW_CAD_NO_AUTO_INSTALL;
-  else process.env.SW_CAD_NO_AUTO_INSTALL = savedNoInstall;
-} finally {
-  fs.rmSync(empty, { recursive: true, force: true });
-}
-
-console.log("\nall cases behave as intended");
+test.after(() => {
+  assert.ok(path.resolve(base).startsWith(path.resolve(os.tmpdir()) + path.sep + "dsh-cad-tests-plugin-"));
+  fs.rmSync(base, { recursive: true, force: true });
+});

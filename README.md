@@ -1,466 +1,184 @@
-# dsh-sw-cad
+# dsh-cad
 
-[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![npm](https://img.shields.io/npm/v/dsh-sw-cad?logo=npm)](https://www.npmjs.com/package/dsh-sw-cad)
-[![awesome-dsh-plugin](https://img.shields.io/static/v1?label=awesome-dsh-plugin&message=listed&color=blue)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-
-**Two MCP servers and two skills that let a DeepSeek Harness or Codex agent drive real CAD software.**
-They wire up two existing open-source projects — [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP)
-and [wzyn20051216/solidworks-automation-skill](https://github.com/wzyn20051216/solidworks-automation-skill) —
-so an agent can draw in AutoCAD, model in SolidWorks, and export the results. This repository is the
-configuration layer: isolated environments, launch parameters, on-demand loading and client registration.
-It does not fork, patch or repackage either server. Both now hide their catalogs behind their own
-discovery mode, so this repository no longer ships one: it configures theirs.
-
-English | [中文](README.zh.md)
-
-## What it does, and when you want it
-
-A CLI agent that can read a drawing is useful. One that can *produce* one is a different tool. With this
-kit installed, dsh or Codex can take a sentence like "draw an M6 threaded-hole bracket on an ISO A3 sheet
-and export PDF" and actually do it — create layers, draw geometry, dimension it, stamp a title block,
-run a validator, and hand back a file.
-
-The catch is the same as every COM automation: **the CAD application must be running, and the agent must
-run as the same Windows user and integrity level as the CAD app.** This is not a cloud service and there
-is no headless substitute for native `.dwg` / `.sldprt` output.
-
-Two skills are the entry points. They load lazily — the SKILL.md is read only when a request matches its
-description, so an idle session pays nothing for them:
-
-| Skill | How it works |
-|---|---|
-| `solidworks-automation` | Script-driven: 66 Python modules (30 `sw_*.py` COM wrappers plus OCCT/FEA/DFM tooling), with preflight, capability gating and evidence chains |
-| `autocad-mcp-pro` | Authored here (upstream ships no AutoCAD skill). Drives the AutoCAD MCP through its two meta-tools |
-
-Two MCP servers are the muscle, registered in the client config:
-
-| Server | Tools advertised | Idle cost | Mode |
-|---|---:|---:|---|
-| `autocad` | 2 | 365 tokens | Upstream `DISCOVERY_MODE=search`: only `search_tools` + `call_tool`; the 242-tool catalog is searched by keyword |
-| `solidworks` | 3 | 474 tokens | Upstream `SW_MCP_DISCOVERY=search`: `sw_search_tools`, `sw_describe_tool`, `sw_call_tool`; the 66-tool catalog (50 `solidworks_*` + 14 `cadstudio_*` + 2 `design_*`) is searched on demand, and would otherwise cost 23,411 |
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/token-cost-dark.svg">
-  <img alt="Bar chart of idle context cost: AutoCAD direct 83,732 tokens, SolidWorks direct 23,411, both together 107,143, this kit 839" src="docs/token-cost-light.svg">
-</picture>
-
-*Tool schemas are paid for before the first request. Connected directly the two servers cost 107,143
-tokens; through this kit they cost 839, a 99.2% cut. Both sides are measured the same way: the
-`tools/list` bytes on the wire, counted with `cl100k_base`.*
-
-```
-you speak natural language
-   │
-   ├─ dsh / Codex lazily loads a skill by its SKILL.md description
-   │      ├─ solidworks-automation  → sw_*.py scripts → COM → SolidWorks
-   │      └─ autocad-mcp-pro        → search_tools / call_tool → MCP → AutoCAD
-   │
-   └─ MCP servers (cordis.patch.yml / codex config.toml)
-          ├─ autocad    upstream discovery mode, 242 tools on demand
-          └─ solidworks upstream discovery, 3 entry tools, 66 tools on demand
-```
-
-## What is upstream, what is ours
-
-This matters more than usual here, because the two servers are other people's work. The split is:
-
-| Part | Origin | License |
-|---|---|---|
-| AutoCAD MCP server (`autocad-mcp-pro`) | [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP), installed from PyPI | MIT |
-| SolidWorks skill + MCP server | [wzyn20051216/solidworks-automation-skill](https://github.com/wzyn20051216/solidworks-automation-skill), cloned at install time | MIT |
-| `skills/autocad-mcp-pro/SKILL.md` | Authored here — upstream has no AutoCAD skill | MIT |
-| `bin/`, `lib/` (including `probe.py`, which checks for the CAD COM servers), `package.json`, `cordis.patch.yml`, `install.ps1`, `bootstrap.ps1`, `codex-config.snippet.toml`, `assets/`, READMEs | Authored here | MIT |
-
-**Nothing upstream is vendored.** The installer fetches the PyPI package and clones (or zip-downloads) the
-SolidWorks repository at install time, so you always get upstream's current code and upstream keeps
-ownership of it. The value this repository adds is the part that was missing: verified launch parameters,
-the discovery-mode configuration for both servers, the on-demand skill wiring, the junction trick that
-keeps gigabytes off C:, and an installer that survives a blocked git
-protocol.
-
-**One exception, and it is deliberate:** `patches/` carries two fixes for upstream defects that are
-silent — a vertical linear dimension measures 0.0, and every edge's diameter and length come back null.
-Both are open as pull requests upstream; until they land, `install.ps1` applies the patches to the
-installed copies and `bootstrap.ps1` reports whether they are in place. See
-[`patches/README.md`](patches/README.md).
-
-## Install
-
-Three ways in. Pick one, then check the prerequisites at the end of this section.
-
-### 1. As a dsh plugin (recommended)
-
-```bash
-dsh plugin --profile web add dsh-sw-cad
-```
-
-That is the whole install. `package.json` declares `dsh.bundle.patch`, so dsh picks up this
-repository's `cordis.patch.yml`, which inserts one row: this package. The package is a real cordis
-plugin (`lib/index.js`), not a wrapper around a binary, so dsh imports it from the profile and
-nothing has to be on PATH.
-
-On first load the plugin resolves its own paths, installs the pinned upstream servers if they are
-missing (a few minutes, once), and then registers the two MCP clients with absolute paths. If the
-install cannot succeed it throws with the failing path and the command to re-run, instead of
-registering rows that would fail silently. `SW_CAD_NO_AUTO_INSTALL=1` turns the automatic install off
-and surfaces the missing pieces as an error instead.
-
-### 2. npm, global (adds the CLI)
-
-```bash
-npm install -g dsh-sw-cad
-dsh-sw-cad install
-```
-
-Same result, plus `dsh-sw-cad` on PATH for `doctor`, `where` and `serve` — useful when you want to
-check the install without booting dsh.
-
-### 3. Without npm: `bootstrap.ps1`
-
-```powershell
-git clone https://github.com/27painter/dsh-sw-cad.git
-cd dsh-sw-cad
-.\bootstrap.ps1 -Check     # report only, changes nothing; exits 1 if something is missing
-.\bootstrap.ps1            # install whatever is missing
-```
-
-It inspects ten things and repairs only what is absent or stale:
-
-| Check | Fixed by |
-|---|---|
-| Python ≥ 3.11 | nothing — it reports the problem and stops |
-| `venv-autocad` + `autocad-mcp-pro` | `install.ps1` |
-| `venv-solidworks` + `mcp` / `pymupdf` / `ezdxf` / `pywin32` | `install.ps1` |
-| SolidWorks skill clone | `install.ps1` |
-| `~/.dsh/skills` junction | created |
-| `~/.dsh/cordis.patch.yml` entries | `install.ps1` (backs the file up first) |
-| `~/.codex/skills` junctions | created |
-| `~/.codex/config.toml` entries | appended, with a backup |
-
-Running it twice is a no-op. It exits `0` when everything is in place and `1` otherwise, so it is safe to
-wrap in a script or hand to an agent. Nothing is downloaded unless a core piece is actually missing.
-
-> [!WARNING]
-> Route 3 also writes `~/.dsh/cordis.patch.yml`. If you installed the plugin as well, that is a second
-> registration of the same two servers under the same `serverName`, and dsh refuses the duplicate — the
-> session fails to start. Use one route or the other, not both: with the plugin installed, keep
-> `~/.dsh/cordis.patch.yml` at `[]`.
-
-### Commands
-
-| Command | What it does |
-|---|---|
-| `dsh-sw-cad install` | install the pinned upstream servers and write `~/.dsh/sw-cad.json` |
-| `dsh-sw-cad doctor` | report present/missing pieces and the pinned versions, change nothing, exit 1 if something is missing |
-| `dsh-sw-cad where` | print every path the servers will use |
-| `dsh-sw-cad serve autocad\|solidworks` | run one MCP server over stdio, for manual testing |
-
-`install` is idempotent, and the plugin runs it for you on first load. Versions are pinned in
-`lib/upstream.json` — `autocad-mcp-pro` 1.6.0 and one SolidWorks skill commit — so a machine that
-installs today and one that installs next month get the same servers.
-
-> [!TIP]
-> **Rather not run any of this yourself?** Paste the block below into dsh, Codex, or any agent that can
-> run commands on this machine. It carries everything the agent needs, so you can read the rest of this
-> section only if something goes wrong.
+Windows 上的 **DSH → AutoCAD** 连接插件。本项目由 [27painter/dsh-sw-cad](https://github.com/27painter/dsh-sw-cad) 分离而来，仅保留 AutoCAD，不安装 SolidWorks 环境。
 
 ```text
-Install https://github.com/27painter/dsh-sw-cad on this Windows machine.
-
-Run: npm install -g dsh-sw-cad && dsh-sw-cad install
-That installs the package, then the two upstream servers (AutoCAD MCP and the
-SolidWorks skill) plus the client entries. dsh-sw-cad install is idempotent and
-only touches what is missing.
-
-Do not run it elevated: it must run as the same Windows user as AutoCAD and
-SolidWorks. It writes nothing on C: except ~/.dsh and ~/.codex, and never touches
-the CAD installations or the registry.
-Then verify with: dsh-sw-cad doctor, dsh --profile headless --dump-config, codex mcp list.
-Report any step that fails instead of silently working around it.
+DSH agent → DSH 原生 MCP 客户端 → autocad-mcp-pro → Windows COM → AutoCAD
 ```
 
-### Prerequisites
+真正的绘图工具来自 [U-C4N/Autocad-MCP](https://github.com/U-C4N/Autocad-MCP)。本插件负责解释器发现、独立环境、固定版本安装、配置和客户端注册，不复制上游工具实现。
 
-- Windows 10/11 with AutoCAD and/or SolidWorks installed
-- Python ≥ 3.11 on PATH (`python --version`)
-- dsh (DeepSeek Harness) or Codex CLI; Node ≥ 20 for routes 1 and 2
-- Git — optional; the installer falls back to a codeload zip when git is blocked
+## Python：通常不用另装
 
-### What if the CAD applications are not installed
+支持复用 DSH 桌面版自带的 Python，**仅用它创建独立 venv**；CAD 依赖不会装进 DSH 自带 Python。
 
-The plugin checks for both COM servers before registering anything (`lib/probe.py`, a registry
-ProgID lookup — it does not launch either application). A machine with only AutoCAD registers only
-the AutoCAD server, and vice versa; a machine with neither registers nothing and says so in the log
-instead of offering tools that could only fail.
+自动发现顺序：
 
-```
-[dsh-sw-cad] solidworks: no COM server registered on this machine, not registering it
-[dsh-sw-cad] registered autocad (base D://cad-agents, upstream pinned in lib/upstream.json)
-```
+1. 显式 `--python` / PowerShell `-Python`。
+2. `CAD_PYTHON` 环境变量；JS 入口也支持配置文件中保存的绝对 Python 路径。
+3. DSH 数据目录内的 `dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe`，然后其他 runtime。
+4. 可用的环境/PATH 解释器。
 
-`SW_CAD_DISABLE=autocad,solidworks` turns that decision into a setting, and
-`dsh-sw-cad doctor` prints what the probe found without starting dsh.
+`DSH_HOME` 可覆盖默认的 `~/.dsh`。WindowsApps 商店别名会被跳过；解释器须满足 Python ≥3.11，具备创建 venv 与安装 pip 的能力。显式指定一个无效路径会报错，不会偷偷切换到另一套 Python。
 
-Note that *installed* is not the same as *running*. AutoCAD registered but closed means the AutoCAD
-tools wait for the application and then fail with a message about a modal dialog; SolidWorks' own
-health check reports the install, not the running instance. Starting the CAD application as the same
-Windows user as your agent is the last step of any install.
+DSH 内置 Python 在本机已实际验证能创建独立环境；其他 DSH 分发版本仍应先检查，不保证所有嵌入式 Python 都具备相同能力。
 
+## 前提
 
-### Version support
+- Windows 10/11，已安装且已授权 AutoCAD。
+- DSH（本次测试宿主为 0.2.2-rc.1）或可配置 MCP 的客户端。
+- Node.js ≥20 用于 CLI；DSH 插件入口使用宿主 Node，不要求系统 PATH 另有 Node。
+- 首次准备环境需要访问 PyPI。正常使用不需要访问 GitHub 下载 SolidWorks 项目。
+- DSH 与 AutoCAD 使用相同 Windows 用户、相同权限级别，推荐都普通启动。
 
-Upstream verifies against a single release but writes for a range. The honest picture:
+## 从本地源码安装到 DSH
 
-| CAD | Verified | Expected to work | Why |
-|---|---|---|---|
-| AutoCAD | 2026 (every COM path, live run), 2027 (API compatible) | 2025 / 2024 / 2023 | COM goes through the long-stable ActiveX API. Run the upstream `scripts\smoke_*_com.py` against your build to confirm. And if COM cannot do something on your version, the ezdxf backend still can — it needs no AutoCAD at all. |
-| SolidWorks | 2026 SP4.1 (upstream's acceptance target), **2025 SP05** (live run: part → sketch → rectangle → extrude → save → STEP) | 2024 / 2023 | The code carries explicit SW2024 fixes (Chinese edition: selecting a sketch by name, `AddComponent4` returning `None`), and upstream's contributor guide asks for 2020–2025 compatibility. The 2025 run produced a Chinese sketch name (`草图1`), so that fix path was exercised too. 2023 has not been exercised. |
-
-Older versions are not refused — nothing checks a version number. They are simply outside what upstream
-verified, so start with one small job and look at the result before trusting a full drawing.
-
-**What this package itself has run.** The live verification below was done on AutoCAD 2026 and
-SolidWorks 2026 SP4.1 in October 2026. SolidWorks **2025 SP05** has since been exercised separately
-(part → sketch → rectangle → extrude → one body → save → STEP, with a Chinese sketch name), so 2025 is
-now verified too; AutoCAD 2026 is the only AutoCAD build this package has been run against.
-
-### Appendix — upstream's own install steps
-
-These are the upstream projects' own instructions. This is also what `install.ps1` automates, so read it if
-you want to understand or debug the install.
-
-**AutoCAD MCP server** — [upstream install](https://github.com/U-C4N/Autocad-MCP#install). Into a venv on
-the data drive (recommended here):
+在 DSH 插件管理器中安装本地项目目录，或在 `dsh` 命令可用时运行：
 
 ```powershell
-python -m venv D:\cad-agents\venv-autocad
-D:\cad-agents\venv-autocad\Scripts\python.exe -m pip install "autocad-mcp-pro[full]"
-D:\cad-agents\venv-autocad\Scripts\autocad-mcp.exe --help    # stdio server entry point
+dsh plugin --profile desktop add "D:\code\dsh-cad"
 ```
 
-Upstream's own one-liners, if you do not want a venv:
+`desktop` 应换成你实际使用的 profile。不要直接覆盖 profile 的 `node_modules`。
 
-```bash
-pip install autocad-mcp-pro              # or: uvx autocad-mcp-pro
-autocad-mcp                              # backend auto-selected
-AUTOCAD_MCP_BACKEND=ezdxf autocad-mcp    # headless DXF, no AutoCAD needed
-AUTOCAD_MCP_BACKEND=com   autocad-mcp    # live AutoCAD (needs the [com] extra)
-```
+**先停用其他同名 `autocad` MCP 连接**（例如直连条目、dsh-sw-cad 或另一个桥），避免命名空间冲突。安装失败时保留原配置以便回退。
 
-Extras: `[com]` = live AutoCAD control (pywin32 + Pillow), `[pdf]` = matplotlib for PDF/PNG output,
-`[office]` = openpyxl for XLSX takeoffs, `[full]` = all of them. Upstream also documents an HTTP transport
-(`autocad-mcp --transport http --port 8000`) and a JSON config for Claude Desktop / Cursor.
+本插件通过 DSH 自带的 `@deepseek-ai/dsh-mcp-client` 接线。它不是 Python MCP 本身，也不需要额外安装另一个 CAD 桥。
 
-**SolidWorks skill + MCP** — [upstream quick start](https://github.com/wzyn20051216/solidworks-automation-skill#quick-start).
-Upstream offers three entry points; pick one:
+### 首次加载
 
-```bash
-# Option 1 — skill only (simplest)
-npx github:wzyn20051216/solidworks-automation-skill
+默认缺运行环境时，插件自动创建独立 venv、安装固定上游版本和本包所需补丁，然后注册一个 `autocad` MCP 服务。
 
-# Option 2 — MCP via Smithery
-npm install -g @smithery/cli
-smithery mcp add wzyn20051216/solidworks-automation-skill --client codex --config '{}'
+**插件及 CLI 的默认自动安装是 RuntimeOnly：不修改 DSH profile/skills、不修改 Codex 配置/skills。** DSH profile 中的插件注册由插件管理器负责。工作文件目录按需建立。
 
-# Option 3 — CAD Studio desktop app, from the upstream Releases page
-```
+用 `CAD_NO_AUTO_INSTALL=1` 可禁止自动安装，缺环境时明确报错。
 
-Manual clone (what this kit does, and what you need if you want the skill on the data drive):
+## 先手动准备运行环境（便于看日志）
+
+从项目目录执行（`node` 可替换为 DSH 自带 Node 的绝对路径）：
 
 ```powershell
-git clone --depth 1 https://github.com/wzyn20051216/solidworks-automation-skill.git D:\cad-agents\dsh-skills\solidworks-automation
-D:\cad-agents\venv-solidworks\Scripts\python.exe -m pip install -r D:\cad-agents\dsh-skills\solidworks-automation\requirements.txt
-D:\cad-agents\venv-solidworks\Scripts\python.exe -m pip install -r D:\cad-agents\dsh-skills\solidworks-automation\mcp-server\requirements.txt
-D:\cad-agents\venv-solidworks\Scripts\python.exe D:\cad-agents\dsh-skills\solidworks-automation\scripts\cad_doctor.py
+node bin/dsh-cad.mjs where
+node bin/dsh-cad.mjs install --base "D:\cad-agents" --work "D:\cad"
+node bin/dsh-cad.mjs doctor
 ```
 
-**Set `SW_MCP_DISCOVERY=search` on the SolidWorks server** (every route above does this for you; this is
-the manual step). Upstream defaults to it since 2026-10-29, so an unconfigured client already gets the
-three entry tools; setting it explicitly keeps that true if upstream ever changes the default back.
-Without it the client carries all 66 tool schemas — 23,411 tokens — in every request.
+不必传 `--python`；`where` 会打印实际选中的解释器及来源。安装成功后路径配置保存到 `DSH_HOME/cad.json`。
 
-**Register both servers with your client.** dsh reads `~/.dsh/cordis.patch.yml` — copy this repository's
-`cordis.patch.yml` there. It inserts one row — this package — and the plugin registers the servers itself,
-so nothing has to be on PATH. Codex reads
-`~/.codex/config.toml` — append `codex-config.snippet.toml`, or use upstream's own registrar
-(`mcp-server\register_codex_mcp.ps1 -Python <venv python> -InstallDependencies`). The Codex snippet does
-contain absolute paths, so adjust those to your `-BaseDir`.
-
-**Make the skills visible.** Both clients only scan their own skills directory:
+只使用 PowerShell、不依赖 PATH 中的 Node，也可以：
 
 ```powershell
-# dsh: one junction for the whole skills folder (matches what install.ps1 does)
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.dsh" | Out-Null
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\skills" -Target "D:\cad-agents\dsh-skills"
-
-# Codex: one junction per skill (its skills folder may hold other skills)
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.codex\skills" | Out-Null
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.codex\skills\solidworks-automation" -Target "D:\cad-agents\dsh-skills\solidworks-automation"
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.codex\skills\autocad-mcp-pro"       -Target "D:\cad-agents\dsh-skills\autocad-mcp-pro"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -RuntimeOnly -BaseDir "D:\cad-agents" -WorkDir "D:\cad"
 ```
 
-### Appendix — what `install.ps1` does
+直接执行 PowerShell 脚本不会替 CLI 保存 `cad.json`；请让插件使用相同的 `baseDir` / `workDir` 配置，或使用默认路径。
 
-`install.ps1` runs everything in the appendix above, plus the parts that are easy to get wrong: both venvs on the data
-drive, the junctions, the discovery-mode parameters, and a timestamped backup of `~/.dsh/cordis.patch.yml`.
+显式解释器示例：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-
-# custom locations / force rebuild
-.\install.ps1 -BaseDir "E:\cad" -WorkDir "E:\AutoCad" -Force
+node bin/dsh-cad.mjs install --python "E:\Python312\python.exe" --base "D:\cad-agents" --work "D:\cad"
 ```
 
-It checks Python, creates the directories, builds the venvs, installs `autocad-mcp-pro[full]` and the
-SolidWorks requirements, fetches the skill at the pinned commit (zip, so git is not needed), applies
-`patches/` to the installed copies, junctions the skills into `~/.dsh/skills`, writes the dsh config,
-and drops the AutoCAD skill in place.
+`--force` 会删除并重建插件自己的 `venv-autocad`；不要在服务运行时使用。脚本会校验删除目标，并拒绝将 junction/symlink 当作 venv 删除。
 
-If you are not sure what is already on the machine, run `bootstrap.ps1` instead: it decides whether
-`install.ps1` is needed at all.
+## 配置
 
-**Codex users still need one step** — append `codex-config.snippet.toml` to `~/.codex/config.toml` and
-junction the two skills into `~/.codex/skills/` (last four commands of the appendix above).
+用户路径配置：`DSH_HOME/cad.json`，默认 `~/.dsh/cad.json`：
 
-> [!IMPORTANT]
-> **Start AutoCAD / SolidWorks first, as the same user.** COM automation crosses a process boundary that
-> Windows guards by user and integrity level. An agent started elevated while the CAD app runs normally
-> (or vice versa) will connect to nothing, and the failure looks like "the tool did nothing".
->
-> This rule is specific to COM. [`dsh-nx`](https://github.com/27painter/dsh-nx) drives NX through
-> NXOpen, which runs inside the NX process — an open NX window cannot be attached to there, so that
-> plugin starts its own batch session and must **not** be pre-opened. Do not carry this habit across.
-
-## Usage
-
-Just describe the drawing. The skill loads itself.
-
-```text
-Open AutoCAD, draw a bearing housing: base 120×80×10, upright 60 high × 12 thick,
-φ40 through hole on top. ISO A3 sheet with title block and dimensions, save to
-D:\AutoCad and export PDF.
+```json
+{
+  "baseDir": "D:\\cad-agents",
+  "workDir": "D:\\cad",
+  "backend": "com",
+  "progId": "AutoCAD.Application.25.1",
+  "launchMode": "never"
+}
 ```
 
-```text
-In SolidWorks, build a flange: OD 100, 20 thick, 30 bore, four M10 bolt holes on a
-bolt circle. Save as SLDPRT and export STEP.
-```
+`python` 可以省略以自动发现，也可以填一个解释器绝对路径。CLI 的 `--python` 优先于旧配置。插件条目还可通过 `config` 提供同名选项。
 
-Practical notes, learned the hard way:
+- `baseDir`：专用环境和 pip 缓存；venv 位于其 `venv-autocad` 子目录。
+- `workDir`：图纸允许访问的目录及子目录，同时作为 MCP 工作目录。
+- `backend`：默认 `com`，避免连接失败后把后台 DXF 当成实控 AutoCAD；若要显式无头模式，需自行评估并配置。
+- `progId`：默认 `AutoCAD.Application`；按本机注册情况可指定版本化 ProgID。
+- `launchMode`：默认 `never`，只连接已启动的 AutoCAD；需自动启动时显式设为 `auto`。可通过 `CAD_LAUNCH` 覆盖。
+- `stateDir`：默认 `<baseDir>/state`，保存上游 1.8 的操作日志和检查点；必须独立于源码仓库和直接存放图纸的目录。可通过 `CAD_STATE_DIR` 覆盖。
+- `CAD_BASE`、`CAD_WORK_DIR`、`CAD_PYTHON`：可通过环境变量覆盖。
+- `CAD_DISABLE=autocad`：禁用，且不会触发自动安装。
+- `CAD_ASSUME=autocad`：仅在注册表探测不准时强制注册；不能替代实际的 COM 连接能力。
 
-- **SolidWorks tools nest their arguments.** The upstream tools take their payload under a `params` key,
-  so a call looks like `call_tool(name="solidworks_sketch_and_extrude", arguments={"params": {"shape":
-  "rectangle", "width_mm": 60, "height_mm": 40, "depth_mm": 10}})`. AutoCAD tools take theirs flat.
-  Getting this wrong fails with a pydantic message about a missing `params` field, which is the hint.
-- **Say one CAD at a time.** Mentioning both loads both skills and mixes the task.
-- **Ask for a plan first on anything complex.** Both skills have a planning step; approving a plan before
-  geometry is drawn is cheaper than undoing a bad drawing.
-- **Ask for the preview.** The AutoCAD path ends in an 8-step validator plus a screenshot; the SolidWorks
-  path exports four orthographic previews. "Show me the preview" is a fair request and the skills honor it.
-  One caveat, measured here: the AutoCAD screenshot needs the window to be visible — with AutoCAD hidden or
-  minimised it comes back blank. The geometry itself is always verifiable through the API (handles, bounding
-  boxes, mass properties), so do not treat a blank image as a failed drawing.
+同一 `autocad` 命名空间只能有一个连接。所有默认写入都针对当前绑定文档，正式图纸先备份；切换活动文档后应重新确认目标。
 
-## Verification
+## 上游版本与补丁
+
+当前固定版本以 `lib/upstream.json` 为唯一默认来源：**autocad-mcp-pro 1.8.0**（2026-11-10 核对的 [GitHub 最新正式版](https://github.com/U-C4N/Autocad-MCP/releases/tag/v1.8.0) 与 [PyPI 版本](https://pypi.org/project/autocad-mcp-pro/1.8.0/)一致）。不是无约束地安装以后发布的 latest。
+
+插件会核对实际已安装版本和核心模块，不再只凭 `autocad-mcp.exe` 文件存在判断就绪。升级 pin 时必须重新验证：MCP 握手、工具参数、默认行为、COM 实机和补丁。
+
+`patches/apply_patches.py` 根据**目标环境元数据的精确版本**选择修复/验证路径，不使用脚本自身所在环境的包版本冒充目标版本。实际检查发现 PyPI 1.8.0 仍未包含本插件所需的竖向线性/角度标注修复，因此保留经过 1.8.0 锚点和行为检查的兼容补丁；不能因版本号较新就假定已修复。未知版本、缺目标、漂移和半应用状态均需明确处理，详见 `patches/README.md`。
+
+1.8.0 使用 `DISCOVERY_MODE=search`，默认列出 6 个入口：`search_tools`、`describe_tool`、`call_tool`、`cad_batch`、`drawing_info`、`entity_list`。`TOOL_PROFILE=full`、`TOOL_PACKS=all` 保留全部可搜索工具；实际数量以 `system_about` 为准，不承诺跨版本固定 token 数。
+
+### 从 1.6.0 迁移
+
+先备份 `cad.json` 并停用插件，再在**新 baseDir** 安装，避免覆盖正在运行的旧 venv：
 
 ```powershell
-# everything present? read-only, exits 1 if something is missing
-dsh-sw-cad doctor
-
-# every path the servers will use
-dsh-sw-cad where
-
-# dsh sees both servers and both skills
-pnpm dsh --profile headless --dump-config
-pnpm dsh --profile headless "list available skills"
-
-# SolidWorks skill self-check (Python deps + COM)
-& "D:\cad-agents\venv-solidworks\Scripts\python.exe" "D:\cad-agents\dsh-skills\solidworks-automation\scripts\sw_preflight.py"
-
-# are the upstream patches still in place? read-only, exits 1 when one drifted
-python patches\apply_patches.py --check
-
-# both MCP servers answer a handshake through the same entry point dsh uses
-node bin\dsh-sw-cad.mjs serve solidworks     # expects solidworks_mcp, 3 entry tools
-node bin\dsh-sw-cad.mjs serve autocad        # expects AutoCAD MCP Pro, 2 entry tools
-
-# Codex
-codex mcp list
+node bin/dsh-cad.mjs install --base "D:\cad-agents-1.8.0" --work "D:\cad"
+node bin/dsh-cad.mjs doctor
 ```
 
-What was verified before publishing in October 2026, against live applications (AutoCAD 2026 and
-SolidWorks 2026 running at the time): `system_status` returns `connected: true`, `backend: com`, the running version and the active
-document name; `drawing_info` returns the open document's entity count, extents and units; `layer_list`
-returns the live layer table; and the SolidWorks side reports `status: ok` with the running instance
-detected. Both `serve` targets also answer a JSON-RPC handshake through the package's own binary — the
-AutoCAD server reports `AutoCAD MCP Pro 3.4.11` (the pip package is 1.6.0, the server carries its own
-version), the SolidWorks server reports `solidworks_mcp` 1.30.0 — and they advertise 2 and 3 entry tools.
-Discovery finds `gear_draw_spur_front_view` / `keyway_draw_keyed_bore` by keyword; on the SolidWorks side
-`sw_search_tools` with the Chinese query "健康检查" returns `solidworks_health_check`, and `sw_call_tool`
-runs it against a live SolidWorks 2026. `dsh --dump-config` loads both rows from this package; the
-SolidWorks preflight passes.
+成功后重载/启用插件，核对 `system_about` 是 1.8.0、后端为 COM，并在新图验收保存重开。保留旧环境；仅把 cad.json 指回 1.6.0 不够，回退还需匹配旧插件 pin/配置，或启用独立的已验证旧连接。
 
-## Design notes
+需要注意的新版默认行为：
 
-**1. Discovery mode is the whole trick.** 242 tool schemas cost 83,732 tokens if advertised. In discovery
-mode the client sees two tools (365 tokens) and searches a catalog that carries 206 AutoCAD command names
-plus 1439 synonyms — say "chamfer" and it finds `FILLET`.
+- 写入 `cad_batch` 默认 `on_error=auto`，COM 回滚仍是 best-effort UNDO，不是绝对原子；读取 `atomicity`。需要旧的保留前序步骤行为时显式 `on_error=stop`。
+- `LISP_POLICY=read`，危险模式保持关闭；不要为了绕过拒绝关闭策略。
+- 命令通道会等待完成并可能返回 `command_incomplete`，不是简单的“已发送”。
+- 持久化日志放在独立 `stateDir`，检查 `system_status` 的状态存储是否降级。
+- 详细迁移和本机验收记录见 `docs/UPSTREAM-1.8.0-VALIDATION.md`；旧 1.6.0 记录保留作历史基线。
 
-**2. SolidWorks used to need a shim; upstream built one instead.** Until 2026-10-29 that server registered
-all 66 tools unconditionally — 23,411 tokens before the first request — so this repository carried a shim
-that advertised two meta-tools in front of it. Upstream then implemented the same idea itself, better
-tested, and this bundle switched to it: `SW_MCP_DISCOVERY=search` exposes `sw_search_tools`,
-`sw_describe_tool` and `sw_call_tool` (474 tokens) with bilingual synonym scoring, and `sw_describe_tool`
-returns a single schema on demand, which the shim never could. The shim was removed rather than kept as a
-second implementation of a feature its owner now maintains.
+## CLI
 
-**3. Keep `TOOL_PROFILE=full` and `TOOL_PACKS=all`.** They only narrow the *searchable* catalog and do not
-change idle cost. Measured: `lean + core,mech` drops the catalog to 58 tools and makes the parametric gear
-and keyway tools unfindable. Narrowing packs loses capability without saving a token.
-
-**4. Junctions, not copies.** dsh only scans `~/.dsh/skills`, Codex only scans `~/.codex/skills`. Directory
-junctions point both at the data drive; neither tool notices. Deleting a junction does not delete data.
-
-**5. Scope the file access.** The AutoCAD server's `ALLOWED_PATHS` is empty by default, and its own README
-says to set it. This kit sets it to a working directory.
-
-**6. Know what is verified.** The version table under Install says it plainly: upstream verified AutoCAD
-2026 and SolidWorks 2026 SP4.1. Everything else is expected, not proven — run one small job first.
-
-**7. Discovery is not free, it is deferred.** Every tool call costs one extra round trip: search, then
-call. For a single "draw a box" that is slower than calling the upstream tool directly. It is the right
-trade when a session makes several calls, which is the normal case for CAD work.
-
-**8. It ships as a plugin, not as a bin the patch calls.** The first version registered two MCP client
-rows whose `command` was `dsh-sw-cad`, which only resolves when the package is installed globally — so
-`dsh plugin add` on its own left two rows that could not start. A reviewer caught that, correctly.
-`lib/index.js` now imports as a cordis plugin and registers the two clients itself with absolute
-paths, which removes the PATH dependency and lets it check the upstream before registering anything.
-
-**9. Pinned, because "latest" is not a version.** `lib/upstream.json` records the exact
-`autocad-mcp-pro` release and the exact SolidWorks skill commit this bundle was validated against;
-`install.ps1` uses them for both the pip install and the archive download. Bumping them is a deliberate
-commit: re-check that `SW_MCP_DISCOVERY=search` still exposes the three entry tools before publishing.
-
-## Troubleshooting
-
-| Symptom | Cause / fix |
+| 命令 | 作用 |
 |---|---|
-| dsh lists no skills | `~/.dsh/skills` must be a junction whose target exists; folder name must equal the frontmatter `name` |
-| Codex lists no skills | both junctions under `~/.codex/skills\`; Codex must support skills |
-| AutoCAD tools return nothing | CAD not running, or different user/integrity level; set `AUTOCAD_MCP_BACKEND=com` to rule out the ezdxf fallback |
-| SolidWorks preflight fails | missing deps (`requirements.txt` of the skill) or SW not running |
-| `sw_search_tools` returns nothing useful | the server is running in `full` mode, so there is no search entry — check `SW_MCP_DISCOVERY` |
-| `sw_call_tool` says the tool is unknown | it rejects names not in the catalog; run `sw_search_tools` first to get the exact name |
-| `codex mcp list` empty | the snippet must sit at the end of `config.toml`; paths need doubled backslashes |
-| `git clone` fails during install | the installer falls back to a codeload zip automatically |
+| `node bin/dsh-cad.mjs where` | 路径、Python 来源 |
+| `node bin/dsh-cad.mjs install` | 默认只准备运行时，保存 cad.json |
+| `node bin/dsh-cad.mjs doctor` | 只读检查，不安装；缺失/不匹配时退出 1 |
+| `node bin/dsh-cad.mjs serve autocad` | stdio MCP 服务；不要向 stdin 手动输入自然语言 |
+| `node bin/dsh-cad.mjs version` | 插件版本，不是上游 MCP 版本 |
 
-## License
+CLI 的 `--with-dsh-patch` / `--with-codex` 是显式客户端配置选项，不是默认安装流程。旧的完整 PowerShell 安装路径仍保留；涉及 Codex 时必须核对并调整模板中的绝对路径，本轮不对该路径做实机验收。
 
-MIT (see [LICENSE](LICENSE)). Upstream components remain under their own MIT licenses; this repository
-redistributes neither.
+Skill 随包提供，但 RuntimeOnly 不会修改技能目录。基础 MCP 控制不依赖 Skill；如需额外指导，使用客户端自己的技能安装方式。
 
-## Listed on
+## 开发与测试
 
-[![M8ven Score](https://m8ven.ai/badge/mcp/27painter-dsh-sw-cad-72nbze?v=cf1d61753707805eaa75dbd27f05c229)](https://m8ven.ai/mcp/27painter-dsh-sw-cad-72nbze?s=readme)
+```powershell
+npm test
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/powershell.test.ps1
+python test/patches.test.py
+npm pack --dry-run
+```
+
+- Node 单元测试显式注入 peer double，覆盖 Python 发现、优先级、商店别名、环境版本校验、禁用无副作用及 RuntimeOnly 注册逻辑；不会因缺 peer 而跳过假绿。
+- PowerShell 测试覆盖 5.1 语法、解释器发现、显式路径、pin 和危险删除目标拒绝，不实际安装或修改 profile。
+- Python 测试只修改临时补丁样本，覆盖半应用、缺文件、漂移、dry-run、幂等。
+- 这些不是 AutoCAD 集成测试。真实 DSH peer、MCP 握手及 AutoCAD 必须单独验收。
+
+建议每个发布版本在**新建测试图**中完成：新建 → 画图元 → 读回坐标/尺寸 → 保存 DWG → 关闭重开 → 截图；记录插件版本、上游版本、Python、DSH、AutoCAD 和已知限制。
+
+## 排障
+
+| 现象 | 检查 |
+|---|---|
+| 找不到 Python | `where` 输出；DSH runtime 是否包含 venv/pip；显式 CAD_PYTHON 是否过期 |
+| 安装超时 | 区分插件下载、PyPI 依赖下载、MCP 启动，不盲目增加全部超时 |
+| MCP 工具没出现 | 插件状态/日志、peer 兼容、是否存在另一个 autocad 连接 |
+| 不能操作 AutoCAD | CAD 已启动、没有模态弹窗、同用户同权限、ProgID 正确、backend=com |
+| 文件访问被拒绝 | 输出路径是否在 workDir 范围内 |
+| 补丁漂移 | 核对 pin 与上游，不直接忽略或强制替换 |
+
+## 许可证与来源
+
+MIT，保留原项目和上游的版权声明；见 LICENSE。本插件不重新分发上游 MCP 实现。后续维护仓库：[echogyf/dsh-cad](https://github.com/echogyf/dsh-cad)。
