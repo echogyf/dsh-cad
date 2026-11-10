@@ -1,7 +1,7 @@
 {
   "name": "dsh-cad",
   "version": "2.0.0",
-  "description": "Drives the installed AutoCAD desktop app from dsh or Codex: one on-demand skill plus one MCP server, using upstream's own tool discovery (2 entry tools instead of 242).",
+  "description": "Drives the installed AutoCAD desktop app from dsh or Codex using an isolated Python runtime, one skill and the upstream MCP server's search discovery.",
   "type": "module",
   "license": "MIT",
   "author": "27painter",

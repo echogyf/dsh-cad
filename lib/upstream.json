@@ -3,7 +3,8 @@
   "autocadMcp": {
     "package": "autocad-mcp-pro",
     "extras": "full",
-    "version": "1.6.0",
-    "validated": "2026-10-23"
+    "version": "1.8.0",
+    "validated": "2026-11-10",
+    "release": "https://github.com/U-C4N/Autocad-MCP/releases/tag/v1.8.0"
   }
 }

@@ -10,7 +10,9 @@ command = "D:\\cad-agents\\venv-autocad\\Scripts\\autocad-mcp.exe"
 startup_timeout_sec = 30
 
 [mcp_servers.autocad.env]
-AUTOCAD_MCP_BACKEND = "auto"
+AUTOCAD_MCP_BACKEND = "com"
+CAD_LAUNCH = "never"
+LISP_POLICY = "read"
 TOOL_PROFILE = "full"
 TOOL_PACKS = "all"
 DISCOVERY_MODE = "search"

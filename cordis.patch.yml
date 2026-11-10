@@ -8,7 +8,7 @@
 # server is installed (installing it once if it is not), and registers one
 # @deepseek-ai/dsh-mcp-client row with an absolute path:
 #
-#   autocad     -> autocad-mcp-pro 1.6.0, DISCOVERY_MODE=search
+#   autocad     -> autocad-mcp-pro 1.8.0, DISCOVERY_MODE=search
 #
 # The version is pinned in lib/upstream.json. If the upstream cannot be installed
 # the plugin throws instead of registering a row that would fail silently.

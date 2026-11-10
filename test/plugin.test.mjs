@@ -42,6 +42,11 @@ test("registers exactly one real-client instance with COM and absolute Python", 
   assert.equal(cfg.env.AUTOCAD_MCP_BACKEND, "com");
   assert.equal(cfg.env.CAD_PROGID, layout.progId);
   assert.equal(cfg.env.DISCOVERY_MODE, "search");
+  assert.equal(cfg.env.DISCOVERY_PINNED, "cad_batch,drawing_info,entity_list");
+  assert.equal(cfg.env.CAD_LAUNCH, "never");
+  assert.equal(cfg.env.ACADMCP_STATE_DIR, path.join(base, "state"));
+  assert.equal(cfg.env.LISP_POLICY, "read");
+  assert.equal(cfg.env.DANGEROUS_COMMANDS_ENABLED, "false");
   assert.equal(cfg.env.TOOL_PACKS, "all");
   assert.equal(cfg.env.ALLOWED_PATHS, layout.workDir);
   assert.equal(cfg.failOnStartupError, true);

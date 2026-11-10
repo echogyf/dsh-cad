@@ -10,7 +10,7 @@ foreach ($relative in @('lib\python.ps1', 'install.ps1', 'bootstrap.ps1')) {
 }
 . (Join-Path $root 'lib\python.ps1')
 $pin = Get-CadPinnedVersion -PackageRoot $root
-if ($pin -ne '1.6.0') { throw "Unexpected pin: $pin" }
+if ($pin -ne '1.8.0') { throw "Unexpected pin: $pin" }
 Write-Output "PASS pin $pin"
 $rejected = $false
 try { Reset-CadVenv -BaseDir (Join-Path $root 'unused-test-base') -VenvPath (Join-Path $root 'never-delete-this') } catch { $rejected = $true }

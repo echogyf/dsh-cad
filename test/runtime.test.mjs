@@ -24,6 +24,20 @@ test("runtime validates the pinned version and required modules", () => {
   assert.equal(inspectRuntime(layout, { run: run(PINS.autocadMcp.version, ["win32com"]) }).ok, false);
 });
 
+test("matching package without validated dimension fixes is not healthy", () => {
+  let calls = 0;
+  const result = inspectRuntime(layout, { run: (exe, args) => {
+    calls += 1;
+    if (calls === 1) return { status: 0, stdout: JSON.stringify({ version: PINS.autocadMcp.version, missing: [] }) };
+    assert.ok(args.includes("--check"));
+    assert.ok(args.includes(layout.baseDir));
+    return { status: 1, stdout: "pending dimension fixes" };
+  } });
+  assert.equal(calls, 2);
+  assert.equal(result.ok, false);
+  assert.match(result.issues[0], /compatibility check failed/);
+});
+
 test("normal installer never changes client config, explicit options opt in", () => {
   const args = installerArgs(layout);
   assert.ok(args.includes("-RuntimeOnly"));

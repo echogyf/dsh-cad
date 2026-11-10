@@ -90,7 +90,8 @@ node bin/dsh-cad.mjs install --python "E:\Python312\python.exe" --base "D:\cad-a
   "baseDir": "D:\\cad-agents",
   "workDir": "D:\\cad",
   "backend": "com",
-  "progId": "AutoCAD.Application.25.1"
+  "progId": "AutoCAD.Application.25.1",
+  "launchMode": "never"
 }
 ```
 
@@ -100,6 +101,8 @@ node bin/dsh-cad.mjs install --python "E:\Python312\python.exe" --base "D:\cad-a
 - `workDir`：图纸允许访问的目录及子目录，同时作为 MCP 工作目录。
 - `backend`：默认 `com`，避免连接失败后把后台 DXF 当成实控 AutoCAD；若要显式无头模式，需自行评估并配置。
 - `progId`：默认 `AutoCAD.Application`；按本机注册情况可指定版本化 ProgID。
+- `launchMode`：默认 `never`，只连接已启动的 AutoCAD；需自动启动时显式设为 `auto`。可通过 `CAD_LAUNCH` 覆盖。
+- `stateDir`：默认 `<baseDir>/state`，保存上游 1.8 的操作日志和检查点；必须独立于源码仓库和直接存放图纸的目录。可通过 `CAD_STATE_DIR` 覆盖。
 - `CAD_BASE`、`CAD_WORK_DIR`、`CAD_PYTHON`：可通过环境变量覆盖。
 - `CAD_DISABLE=autocad`：禁用，且不会触发自动安装。
 - `CAD_ASSUME=autocad`：仅在注册表探测不准时强制注册；不能替代实际的 COM 连接能力。
@@ -108,13 +111,32 @@ node bin/dsh-cad.mjs install --python "E:\Python312\python.exe" --base "D:\cad-a
 
 ## 上游版本与补丁
 
-当前固定版本以 `lib/upstream.json` 为唯一默认来源：**autocad-mcp-pro 1.6.0**。不是自动安装 PyPI 最新版。
+当前固定版本以 `lib/upstream.json` 为唯一默认来源：**autocad-mcp-pro 1.8.0**（2026-11-10 核对的 [GitHub 最新正式版](https://github.com/U-C4N/Autocad-MCP/releases/tag/v1.8.0) 与 [PyPI 版本](https://pypi.org/project/autocad-mcp-pro/1.8.0/)一致）。不是无约束地安装以后发布的 latest。
 
 插件会核对实际已安装版本和核心模块，不再只凭 `autocad-mcp.exe` 文件存在判断就绪。升级 pin 时必须重新验证：MCP 握手、工具参数、默认行为、COM 实机和补丁。
 
-`patches/apply_patches.py` 包含该固定版本所需的竖向线性/角度标注修复。检查会识别缺目标、漂移及半应用状态，不能把某个 marker 出现当成全部完成。不要把旧补丁强套到新上游。
+`patches/apply_patches.py` 根据**目标环境元数据的精确版本**选择修复/验证路径，不使用脚本自身所在环境的包版本冒充目标版本。实际检查发现 PyPI 1.8.0 仍未包含本插件所需的竖向线性/角度标注修复，因此保留经过 1.8.0 锚点和行为检查的兼容补丁；不能因版本号较新就假定已修复。未知版本、缺目标、漂移和半应用状态均需明确处理，详见 `patches/README.md`。
 
-`DISCOVERY_MODE=search`、`TOOL_PROFILE=full`、`TOOL_PACKS=all` 让工具按需发现。具体广告工具数取决于上游版本；不承诺跨版本固定 token 数。
+1.8.0 使用 `DISCOVERY_MODE=search`，默认列出 6 个入口：`search_tools`、`describe_tool`、`call_tool`、`cad_batch`、`drawing_info`、`entity_list`。`TOOL_PROFILE=full`、`TOOL_PACKS=all` 保留全部可搜索工具；实际数量以 `system_about` 为准，不承诺跨版本固定 token 数。
+
+### 从 1.6.0 迁移
+
+先备份 `cad.json` 并停用插件，再在**新 baseDir** 安装，避免覆盖正在运行的旧 venv：
+
+```powershell
+node bin/dsh-cad.mjs install --base "D:\cad-agents-1.8.0" --work "D:\cad"
+node bin/dsh-cad.mjs doctor
+```
+
+成功后重载/启用插件，核对 `system_about` 是 1.8.0、后端为 COM，并在新图验收保存重开。保留旧环境；仅把 cad.json 指回 1.6.0 不够，回退还需匹配旧插件 pin/配置，或启用独立的已验证旧连接。
+
+需要注意的新版默认行为：
+
+- 写入 `cad_batch` 默认 `on_error=auto`，COM 回滚仍是 best-effort UNDO，不是绝对原子；读取 `atomicity`。需要旧的保留前序步骤行为时显式 `on_error=stop`。
+- `LISP_POLICY=read`，危险模式保持关闭；不要为了绕过拒绝关闭策略。
+- 命令通道会等待完成并可能返回 `command_incomplete`，不是简单的“已发送”。
+- 持久化日志放在独立 `stateDir`，检查 `system_status` 的状态存储是否降级。
+- 详细迁移和本机验收记录见 `docs/UPSTREAM-1.8.0-VALIDATION.md`；旧 1.6.0 记录保留作历史基线。
 
 ## CLI
 

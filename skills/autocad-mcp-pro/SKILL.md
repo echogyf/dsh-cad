@@ -1,70 +1,58 @@
 ---
 name: autocad-mcp-pro
-description: "AutoCAD 制图自动化技能（2026/2027 已验证，2023–2025 预期可用）。当任务涉及绘制或修改 DWG/DXF 图纸、机械制图（尺寸标注/图框/标题栏/明细表/紧固件/齿轮/键槽）、建筑平面图（墙/门/窗/面积）、P&ID 工艺图、读取分析现有图纸（算量/提取明细表/版本比对）、或导出 PDF/PNG 时使用。通过 autocad MCP 工具按需检索执行，所有交付必须复核。触发词：AutoCAD、DWG、DXF、CAD、画图、出图、图层、标注、图框、标题栏、明细表、机械制图、批量改图。"
-metadata: { "os": ["win32"], "requires": { "anyBins": ["python", "py"], "pythonPackages": ["pywin32", "ezdxf"] } }
+description: "AutoCAD 制图自动化：绘制/修改 DWG、DXF，图层、标注、图块、布局、建筑平面、机械图和 P&ID，以及图纸分析和导出。通过 autocad MCP 按需发现工具并执行；本插件固定上游 1.8.0，COM 在 AutoCAD 2026 做本机验收，其他版本需要单独验证。"
+metadata: { "os": ["win32"] }
 ---
 
-# AutoCAD 自动化技能（autocad-mcp-pro）
+# AutoCAD 自动化技能
 
-通过 MCP 工具操控本机 AutoCAD（2026/2027 已验证，2023–2025 预期可用）。工具不预加载：服务器处于 **discovery 模式**，会话中只有 `search_tools` 和 `call_tool` 两个元工具（空闲约 356 token），完整 242 工具目录按需检索。
+使用本插件注册的 `autocad` MCP。不要要求系统 PATH 另有 Python，也不要往 DSH 自带 Python 安装 CAD 依赖；运行环境由插件独立 venv 管理。
 
-## 环境预检（每次任务开始）
+## 预检
 
-1. **AutoCAD 是否已运行**：COM 实控需要。没开就提示用户启动，或降级 ezdxf 无头引擎（仅 DXF，无渲染）并在结果中注明。
-2. **权限一致**：dsh/Codex 必须与 AutoCAD 同用户、同完整性级别启动。
-3. **工作目录**：输出放在 `D:\AutoCad`（ALLOWED_PATHS 白名单）内。
-4. 可用 `system_about` 确认运行时后端与版本；`system_capabilities` 查当前工具集。
+1. 先打开 AutoCAD，完成许可提示、关闭模态弹窗；插件默认 `CAD_LAUNCH=never`，不自动启动另一实例。
+2. DSH 和 AutoCAD 同 Windows 用户、同权限，推荐都普通启动。
+3. 用 `system_about`、`drawing_info` 确认上游版本、COM 后端、当前绑定文档；不要把无头 DXF 当成实控。
+4. 文件必须位于插件配置的 `workDir` / `ALLOWED_PATHS` 内，不把 `D:\AutoCad` 当成所有机器的固定路径。
+5. 修改已有图纸前先另存副本；活动文档改变时先确认目标，不盲目重试写操作。
 
-## 工具调用方式（按需检索）
+## 工具发现（上游 1.8.0）
 
-不要凭记忆猜工具名。先 `search_tools` 用关键词检索，再 `call_tool` 调用。
+默认列出 6 个工具：`search_tools`、`describe_tool`、`call_tool`、`cad_batch`、`drawing_info`、`entity_list`。默认启用 252 个可搜索业务工具，完整注册数为 257（5 个 3D 工具需显式启用）；实际以 `system_about` 为准。
 
-- 语料库覆盖 **206 个 AutoCAD 命令名 + 1439 个同义词**：`FILLET`（倒角/圆角）、`EXTRUDE`（拉伸）、`TRIM`（修剪）、`BPOLY`（边界）、`WBLOCK`（写块）、`QSELECT`（快速选择）、`OVERKILL`（删除重复）、`CHSPACE`（空间转换）等均排第 1。
-- 坐标系统一 **WCS**（唯一例外：TEXT 的 rotation 在实体坐标系，镜像文字无法用标量角度表达）。
-- 每个工具有 `_meta.cad` 锚点（cost/acad 命令/synonyms），检索时优先用 AutoCAD 命令名。
-- 工具目录为**全量 242 个**（服务器 env: `TOOL_PROFILE=full` + `TOOL_PACKS=all`）：机械、建筑、工艺、算量各包工具全部可检索；discovery 模式下空闲仍只广告 2 个元工具，目录大小不占常驻 token。
+- 用 `search_tools` 搜索命令、任务关键词，不凭记忆猜参数。
+- 用 `describe_tool` 获取完整 schema。`name` 和 `names` **只传其中一个**，不要同时传空字符串/空数组；它是合成发现工具，不可通过 `call_tool` 代理。
+- 使用平铺参数，例如 `call_tool(name="entity_create_line", arguments={"x1":0,"y1":0,"x2":100,"y2":0})`。
+- 工具坐标遵循其 schema，通用二维操作使用 WCS；不要把屏幕像素直接当图纸坐标。
+- `TOOL_PROFILE=full`、`TOOL_PACKS=all` 保留完整搜索目录；发现模式仅收缩常驻入口。
 
-## 核心工具速查（按工作流，检索锚点）
+## 工作流
 
-| 阶段 | 工具 |
-|---|---|
-| 文档 | `drawing_new`（自动建工程图层+线型）、`drawing_open/save/save_as`、`document_list/activate`、`drawing_audit/purge` |
-| 几何 | `entity_create_line/circle/arc/polyline/rectangle/text/mtext/table/hatch/spline/block_ref`、`entity_edit_geometry`、`selection_window/polygon/filter` |
-| 编辑 | `entity_move/copy/rotate/scale/mirror/offset/trim/extend/fillet/chamfer`、`entity_array_rectangular/polar`、`entity_batch_create/modify`、`cad_batch` |
-| 标注 | `dimension_linear/aligned/angular/radius/diameter`、`dimension_auto`、`dimstyle_*`、`textstyle_*`、`mleaderstyle_*`、`gd_frame`（几何公差框）、`datum_feature`、`surface_texture`、`weld_symbol`、`centre_marks` |
-| 机械 | `mech_part_draw/from_spec/inspect`、`mech_view_add`、`mech_dimension_part`、`mech_hole_pattern`、`gear_draw_spur_front_view`、`gear_draw_helical_front_view`、`gear_draw_section_aa`、`keyway_draw_keyed_bore`、`keyway_draw_section`、`std_part_list/insert`（ISO 紧固件/轴承）、`std_feature_draw` |
-| 图纸完备 | `sheet_frame`、`titleblock_apply_iso_a3`、`titleblock_apply`、`revision_add`、`bom_extract`、`bom_table`、`balloon_add`、`xref_attach/manage`、`image_attach` |
-| 建筑 | `arch_wall/opening/stair/room/rooms_detect/schedule`、`arch_plan_from_spec`（一句规划全图）、`arch_dimension_chains`、`arch_catalogue_*`、`arch_grid/symbol` |
-| P&ID | `pid_symbol_insert/list`、`pid_line_draw`、`pid_from_spec`、`pid_graph`、`pid_instrument_index/line_list/equipment_list` |
-| 布局出图 | `layout_*`、`viewport_*`、`page_setup_apply`、`batch_plot`、`drawing_export_pdf/dxf/dwg` |
-| 分析理解 | `drawing_understand`（读懂他人图纸）、`drawing_scale_check`、`drawing_diff`、`drawing_topology_check`、`analysis_measure_*`、`pipe/cable_takeoff`、`data_extract` |
-| 事务与系统 | `transaction_begin/commit/rollback`（带 undo）、`system_run_command`、`system_run_lisp`、`system_launch` |
+1. 明确单位、尺寸、图层、图框、比例、输出格式；信息不足先确认。
+2. 工程图可用 `drawing_new` 自动准备工程图层/线型。普通连接测试可关闭 bootstrap；不要修改用户原有图纸验证连接。
+3. 优先使用类型化工具：几何、真实 DIMENSION、图块属性、文字、布局、页面设置；不要用文字加线冒充尺寸。
+4. 参数化齿轮、键槽等优先用上游生成器；图框和标题栏优先用相应工具。具体规范适用性仍需核实，不能把 ISO 模板当成所有专业的标准。
+5. 批量操作先 `cad_batch(dry_run=true)`。需要并发保护时携带预览的 revision/实体条件。
+6. 上游 1.8.0 的写入批处理默认 `on_error=auto`；实时 COM 回滚是 best-effort UNDO，**不是绝对原子事务**，读 `atomicity` 和验证结果。原始 command/LISP 不得塞入批处理。
+7. 上游失败可能返回 `kind/category/retryable/hint/operation_id`。只对明确可重试、且没有不确定写入的错误重试；`requires_reconcile`、未知提交状态或半成品必须先读回。
+8. 读回实体与测量值、截图，再保存。正式工程交付按上游要求执行 critique / finalize / verification；明确列出未检查项，不把评分当建筑规范审查。
+9. 关闭并重开本次保存的测试/交付副本，核对实体、尺寸和文件格式；PDF 另核幅面。成功返回不等于交付已验证。
 
-## 服务器内置工作流纪律（来自 server instructions，必须遵守）
+## 能力索引（以搜索结果为准）
 
-1. **工程图**：`drawing_new` 会自动引导出工程图层和线型，不要手工从零建层。
-2. **图框/标题栏**：用 `titleblock_apply_iso_a3`（ISO 7200），**绝不手画**；标题文字原样传入，不要发明变体。
-3. **齿轮/键槽/剖面线**：用参数化工具 `gear_draw_*` / `keyway_draw_*`，**禁止**用基本图元手画齿形。
-4. **标注**：用 `dimension_*` 生成真实 DIMENSION 实体，**禁止**用 text+leader 冒充尺寸。
-5. **收尾**：`drawing_finalize` 是 8 步验证器 + 保存 + 截图，**不过它不能宣称完成**（验证失败会抛错）；随后 `drawing_critique` 应返回 0 issues，并重开 DXF 复核几何、核对 PDF `/MediaBox` 幅面。**工具返回成功 ≠ 任务完成。**
+- 文档：`drawing_new/open/save/save_as`、`document_list/activate`。
+- 几何/编辑：`entity_create_*`、`entity_edit_geometry`、`entity_move/copy/rotate/scale/mirror/offset`、修剪/延伸/倒角/圆角。
+- 批量整理：`entity_modify_where`、`layer_rename/merge`、`entity_delete_many`，先 dry-run。
+- 标注：`dimension_linear/aligned/angular/radius/diameter`、`dimension_auto`、样式工具。
+- 布局出图：`layout_*`、`viewport_*`、`page_setup_apply`、`batch_plot`、导出工具。
+- 建筑：`arch_*` 提供上游自己的平面数据，不因此成为天正原生对象。
+- 专业工具：`mech_*`、`pid_*`、图框/明细表/算量，先核实适用范围。
+- 历史/恢复：`checkpoint_*`、`drawing_history`、`transaction_*`。COM 检查点恢复通常打开新文档，不支持直接替换活动数据库。
 
-## 已验证能力要点
+## 原生命令、LISP 与边界
 
-- 机械：渐开线齿轮（模数/齿数/压力角驱动）、DIN 6885 键槽、ISO 4014/4017/4032/7089/4762 紧固件、ISO 15 轴承（真实块+属性）。
-- 理解/算量：`drawing_understand` 一键读懂他人图纸；`drawing_diff` 版本比对；`pipe_takeoff`/`cable_takeoff` 管/电缆算量（输出多语言工作簿）。
-- 无头：ezdxf 后端可多文档并行、图层状态、图案填充、边界追踪；**无渲染、读不了 ACIS（3DSOLID/REGION 面积）**。
-
-## 已知坑（来自项目真机回归，务必遵守）
-
-1. ActiveX 拒绝在缺失图层上设 `entity.Layer`（ezdxf 会静默创建）→ **先建图层**。
-2. ActiveX 中块引用叫 `BLOCKREFERENCE` 不是 `INSERT`。
-3. pywin32 类型库缓存会导致所有实体返回裸 `IAcadEntity`（无线端点）→ 重启 MCP 服务器。
-4. WIPEOUT、MTEXT 背景色在 AutoCAD 2026 实测缺失 → 此类需求走无头引擎。
-5. 无头 CHSPACE 仅限顶视未扭曲视口；尺寸/ACIS/代理实体/表格会被拒绝。
-6. 版本说明：COM 路径在 **AutoCAD 2026 真机验证**，2027 的 ActiveX API 兼容；2025/2024/2023 走同一套 ActiveX 接口，预期可用但未验证——首次使用先跑服务器仓库的 `scripts\smoke_*_com.py` 确认。ezdxf 无头后端与 CAD 版本无关（不需要 AutoCAD）。
-
-## 边界
-
-- 不用于：纯效果图渲染、BIM/Revit、STEP-first 三维建模、CAM 刀路。
-- 修改既有 DWG 前先另存副本。
-- 无人值守交付前，机械图纸至少人工目视一遍 `view_screenshot` 预览图。
+- 优先类型化工具。`system_run_command` 会等待命令状态，但仍需验证结果；未完成可能返回 `command_incomplete`。
+- `LISP_POLICY=read`、危险模式关闭。不要因为表达式被拒绝就关闭安全策略或绕过限制。
+- 没有 COM 方法的能力应如实说明，不能静默切到无头模式修改原始 DWG。某些无头工具可用于单独副本，必须说明后端与对象损失风险。
+- 3D、BIM/Revit、CAM、天正业务对象并非本轮基础连接验收范围。
+- 上游已报告的工具限制、软件弹窗、非原子回滚仍然存在；不能凭工具数量或测试总数宣称全部可用。

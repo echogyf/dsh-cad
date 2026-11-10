@@ -59,4 +59,14 @@ test("override beats CAD_PYTHON and stale config; legacy python means automatic"
   const layout = resolveLayout({}, { config: { python: "python" }, env: {}, discover });
   assert.equal(requested, undefined);
   assert.equal(layout.backend, "com");
+  assert.equal(layout.launchMode, "never");
+  assert.equal(layout.stateDir, path.join(layout.baseDir, "state"));
+});
+
+test("new upstream settings allow explicit launch and independent state directory", () => {
+  const discover = () => ({ executable: path.resolve("python.exe"), source: "explicit", version: "3.12.14", error: null });
+  const customState = path.resolve("state-outside-drawings");
+  const layout = resolveLayout({ launchMode: "auto", stateDir: customState }, { config: {}, env: {}, discover });
+  assert.equal(layout.launchMode, "auto");
+  assert.equal(layout.stateDir, customState);
 });

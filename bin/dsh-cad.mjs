@@ -131,6 +131,7 @@ function cmdInstall(argv) {
     python: layout.python,
     backend: layout.backend,
     progId: layout.progId,
+    launchMode: layout.launchMode,
     installedAt: new Date().toISOString(),
     version: PKG.version,
   });
