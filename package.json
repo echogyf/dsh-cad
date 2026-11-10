@@ -69,6 +69,7 @@
   },
   "scripts": {
     "check": "node bin/dsh-cad.mjs doctor",
-    "test": "node test/plugin.test.mjs"
+    "test": "node --test test/plugin.test.mjs test/python.test.mjs test/runtime.test.mjs",
+    "test:ps": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/powershell.test.ps1"
   }
 }

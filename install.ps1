@@ -35,7 +35,8 @@
   .\install.ps1 -Python "D:\somewhere\python.exe" -BaseDir "E:\cad" -Force
 #>
 param(
-    [string]$Python = "python",
+    [string]$Python = "",
+    [switch]$RuntimeOnly,
     [string]$BaseDir = "D:\cad-agents",
     [string]$WorkDir = "D:\AutoCad",
     [switch]$Force,
@@ -46,16 +47,24 @@ param(
     [string]$DshProfile = "desktop",
     # Pinned upstream version. Defaults match lib/upstream.json, which is the
     # release this bundle was validated against; changing it is deliberate.
-    [string]$AutocadVersion = "1.6.0"
+    [string]$AutocadVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'lib\python.ps1')
+$DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
+$Python = Find-CadPython -Python $Python -DshHome $DshHome
+if (-not $AutocadVersion) { $AutocadVersion = Get-CadPinnedVersion -PackageRoot $PSScriptRoot }
+$BaseDir = [System.IO.Path]::GetFullPath($BaseDir)
+if ($RuntimeOnly) {
+    Install-CadRuntime -Python $Python -BaseDir $BaseDir -WorkDir $WorkDir -Version $AutocadVersion -PackageRoot $PSScriptRoot -Force:$Force
+    return
+}
 
 # ---- everything heavy lives on the data drive ----
 $VenvAcad  = Join-Path $BaseDir "venv-autocad"
 $SkillsDir = Join-Path $BaseDir "dsh-skills"                    # physical location
-$Junction  = Join-Path $env:USERPROFILE ".dsh\skills"          # logical path dsh scans
-$DshHome   = Join-Path $env:USERPROFILE ".dsh"
+$Junction  = Join-Path $DshHome "skills"                     # logical path dsh scans
 
 function Say($msg) { Write-Host "==> $msg" }
 
@@ -81,7 +90,7 @@ $env:PIP_CACHE_DIR = Join-Path $BaseDir "pip_cache"   # keep pip cache off C: to
 
 # ---------- 3. venv on D: ----------
 Say "[3/6] Creating venv on D: ..."
-if ((Test-Path -LiteralPath $VenvAcad) -and $Force) { Remove-Item -Recurse -Force -LiteralPath $VenvAcad }
+if ($Force) { Reset-CadVenv -BaseDir $BaseDir -VenvPath $VenvAcad }
 if (-not (Test-Path -LiteralPath $VenvAcad)) {
     & $Python -m venv $VenvAcad
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed: $VenvAcad" }
@@ -107,6 +116,8 @@ $pyAcad = Join-Path $VenvAcad "Scripts\python.exe"
 
 & $pyAcad -m pip install "autocad-mcp-pro[full]==$AutocadVersion" --quiet
 if ($LASTEXITCODE -ne 0) { throw "pip install autocad-mcp-pro[full]==$AutocadVersion failed" }
+$installedVersion = & $pyAcad -B -c "import importlib.metadata; print(importlib.metadata.version('autocad-mcp-pro'))"
+if ($LASTEXITCODE -ne 0 -or "$installedVersion".Trim() -ne $AutocadVersion) { throw "Installed upstream version mismatch: $installedVersion (expected $AutocadVersion)" }
 
 # ---------- 5b. upstream fixes this bundle depends on ----------
 Say "[5b] Applying the upstream fixes this bundle depends on..."
@@ -139,7 +150,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $acadSkillDir "SKILL.md"))) {
 
 $ProfileDir = Join-Path $DshHome (Join-Path "profiles" $DshProfile)
 $ProfilePkg = Join-Path $ProfileDir "package.json"
-if (-not (Test-Path -LiteralPath $ProfilePkg)) {
+if (-not $SkipDshPatch -and -not (Test-Path -LiteralPath $ProfilePkg)) {
     $profilesRoot = Join-Path $DshHome "profiles"
     $available = @()
     if (Test-Path -LiteralPath $profilesRoot) {

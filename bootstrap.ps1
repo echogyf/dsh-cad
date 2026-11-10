@@ -42,7 +42,8 @@
   .\bootstrap.ps1 -BaseDir "E:\cad" -WorkDir "E:\AutoCad"
 #>
 param(
-    [string]$Python = "python",
+    [string]$Python = "",
+    [switch]$RuntimeOnly,
     [string]$BaseDir = "D:\cad-agents",
     [string]$WorkDir = "D:\AutoCad",
     [switch]$Check,
@@ -50,14 +51,20 @@ param(
     [switch]$NoDshPatch,
     [string]$DshProfile = "desktop",
     [switch]$Force,
-    [string]$AutocadVersion = "1.6.0"
+    [string]$AutocadVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'lib\python.ps1')
+$DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
+$Python = Find-CadPython -Python $Python -DshHome $DshHome
+if (-not $AutocadVersion) { $AutocadVersion = Get-CadPinnedVersion -PackageRoot $PSScriptRoot }
+$BaseDir = [System.IO.Path]::GetFullPath($BaseDir)
+if ($RuntimeOnly) { $NoDshPatch = $true; $SkipCodex = $true }
 
 $VenvAcad    = Join-Path $BaseDir "venv-autocad"
 $SkillsDir   = Join-Path $BaseDir "dsh-skills"
-$DshHome     = Join-Path $env:USERPROFILE ".dsh"
+# DshHome is resolved above, honoring DSH_HOME.
 $Junction    = Join-Path $DshHome "skills"
 $ProfileDir  = Join-Path $DshHome (Join-Path "profiles" $DshProfile)
 $CodexHome   = Join-Path $env:USERPROFILE ".codex"
@@ -134,13 +141,18 @@ function Invoke-Detect {
         $verLine = ($shown | Select-String -Pattern "^Version:" | Select-Object -First 1)
         if ($verLine) {
             $verText = $verLine.Line.Replace("Version:", "").Trim()
-            Add-Item "core" "autocad-mcp-pro" "OK" "v$verText" $null
+            if ($verText -eq $AutocadVersion) {
+                Add-Item "core" "autocad-mcp-pro" "OK" "v$verText" $null
+            } else {
+                Add-Item "core" "autocad-mcp-pro" "MISSING" "v$verText; expected $AutocadVersion" $null
+            }
         }
         else {
             Add-Item "core" "autocad-mcp-pro" "MISSING" "pip show autocad-mcp-pro failed" $null
         }
     }
 
+    if (-not $RuntimeOnly) {
     # 3. dsh skills junction
     $acadVisible = Join-Path $Junction "autocad-mcp-pro\SKILL.md"
     if (Test-Path -LiteralPath $acadVisible) {
@@ -174,10 +186,8 @@ function Invoke-Detect {
         }
     }
 
-    if ($SkipCodex) {
-        return
     }
-
+    if (-not $SkipCodex) {
     # 5. Codex junction
     $cAcad = Join-Path $CodexSkills "autocad-mcp-pro\SKILL.md"
     if (Test-Path -LiteralPath $cAcad) {
@@ -197,6 +207,7 @@ function Invoke-Detect {
         Add-Item "light" "codex-config" "MISSING" ("absent: " + ($missCodex -join ", ")) $null
     }
 
+    }
     # 7. upstream fixes this bundle depends on (see patches/README.md)
     $patchScript = Join-Path $PSScriptRoot "patches\apply_patches.py"
     if (-not (Test-Path -LiteralPath $patchScript)) {
@@ -225,7 +236,7 @@ function Show-Items {
 
 function Invoke-Installer {
     if (-not (Test-Path -LiteralPath $Installer)) { throw "install.ps1 not found next to bootstrap.ps1" }
-    & $Installer -BaseDir $BaseDir -WorkDir $WorkDir -Python $Python -Force:$Force -SkipDshPatch:$NoDshPatch -DshProfile $DshProfile -AutocadVersion $AutocadVersion
+    & $Installer -BaseDir $BaseDir -WorkDir $WorkDir -Python $Python -Force:$Force -RuntimeOnly:$RuntimeOnly -SkipDshPatch:$NoDshPatch -DshProfile $DshProfile -AutocadVersion $AutocadVersion
 }
 
 function Repair-Patches {
@@ -302,7 +313,7 @@ if ($Check) {
     exit 1
 }
 
-if ($coreBad.Count -gt 0) {
+if ($coreBad.Count -gt 0 -or $Force) {
     Write-Host ""
     Write-Host "Installing the missing upstream pieces:"
     Invoke-Installer

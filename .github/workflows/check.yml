@@ -24,6 +24,9 @@ jobs:
         run: |
           node --check lib/index.js
           node --check lib/paths.mjs
+          node --check lib/python.mjs
+          node --check lib/runtime.mjs
+          node --check lib/plugin.mjs
           node --check bin/dsh-cad.mjs
 
       - name: Compile the Python
@@ -40,10 +43,13 @@ jobs:
       - name: Pack
         run: npm pack --dry-run
 
-      - name: Install the dev dependencies
-        run: npm install --no-audit --no-fund
+      # Pure registration/configuration tests use an explicit peer double;
+      # the real peer and CAD are checked in the desktop integration test.
+      - name: Registration and Python discovery (no skipped peer tests)
+        run: npm test
 
-      # Without the install above this test would print SKIP and exit 0 —
-      # a green run that verified nothing.
-      - name: Plugin registration logic
-        run: node test/plugin.test.mjs
+      - name: PowerShell 5.1 discovery and safe target checks
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/powershell.test.ps1
+
+      - name: Patch safety regression tests
+        run: python test/patches.test.py

@@ -10,7 +10,7 @@ import sys
 import winreg
 
 PROG_IDS = {
-    "autocad": r"AutoCAD.Application",
+    "autocad": sys.argv[1] if len(sys.argv) > 1 else r"AutoCAD.Application",
 }
 
 

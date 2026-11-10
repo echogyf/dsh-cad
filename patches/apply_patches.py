@@ -188,9 +188,8 @@ def apply_one(base: Path, patch, dry_run=False):
         return "missing", "not installed: %s" % path
 
     text = path.read_text(encoding="utf-8")
-    if patch["marker"] in text:
-        return "present", "already applied"
-
+    # A marker alone can survive a partially applied patch. Verify every edit
+    # below before calling the whole patch present.
     applied = 0
     skipped = []
     for old, new in patch["edits"]:
@@ -227,9 +226,10 @@ def main():
         state, detail = apply_one(base, patch, dry_run=args.dry_run or args.check)
         mark = {"applied": "PATCHED", "present": "OK     ", "missing": "SKIP   ", "drift": "DRIFT  "}[state]
         print("[%s] %-32s %s" % (mark, patch["id"], detail))
-        if state == "drift":
+        if state in ("drift", "missing"):
             worst = 1
-            print("           upstream text moved; see %s" % patch["pr"])
+            if state == "drift":
+                print("           upstream text moved; see %s" % patch["pr"])
         elif state == "applied":
             pending = 1
 

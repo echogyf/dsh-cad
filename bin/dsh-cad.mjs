@@ -10,25 +10,24 @@
 // own location plus ~/.dsh/cad.json, so the patch itself carries no absolute
 // path and the same bundle works on any machine.
 import { spawn, spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
+import { autocadConfig, inspectRuntime, installerArgs, powershell } from "../lib/runtime.mjs";
 
 import {
   CONFIG_FILE,
   PKG,
   PKG_ROOT,
+  PINS,
   exists,
-  missingPieces,
+  readConfig,
   resolveLayout,
   writeConfig,
 } from "../lib/paths.mjs";
 
-const PINS = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "lib", "upstream.json"), "utf8"));
-
 const HELP = `dsh-cad ${PKG.version}
 
   serve autocad                run the AutoCAD MCP server over stdio (called by dsh)
-  install [--base <dir>] [--work <dir>] [--python <exe>] [--force] [--with-dsh-patch]
+  install [--base <dir>] [--work <dir>] [--python <exe>] [--force] [--with-dsh-patch] [--with-codex]
                                install the upstream AutoCAD MCP; only the missing
                                parts are touched
   doctor                       report present/missing pieces, change nothing
@@ -49,30 +48,14 @@ function die(msg, code = 1) {
   process.exit(code);
 }
 
-function powershell() {
-  // Prefer the built-in Windows PowerShell; fall back to pwsh on PATH.
-  const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  return exists(ps) ? ps : "powershell";
-}
-
-function runInstaller(layout, { check, force, dshPatch = false }) {
+function runInstaller(layout, options = {}) {
   const script = path.join(PKG_ROOT, "bootstrap.ps1");
   if (!exists(script)) die(`bootstrap.ps1 is missing from the package at ${script}`);
-  const args = [
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", script,
-    "-BaseDir", layout.baseDir,
-    "-WorkDir", layout.workDir,
-    "-Python", layout.python,
-    "-AutocadVersion", PINS.autocadMcp.version,
-  ];
-  if (check) args.push("-Check");
-  if (force) args.push("-Force");
-  // The bundle patch registers the server for dsh, so the installer only
-  // writes ~/.dsh/cordis.patch.yml when the user explicitly asks for it.
-  if (!dshPatch) args.push("-NoDshPatch");
-  return spawnSync(powershell(), args, { stdio: "inherit" });
+  try {
+    return spawnSync(powershell(), installerArgs(layout, options), { stdio: "inherit" });
+  } catch (error) {
+    die(error.message);
+  }
 }
 
 // ---------------------------------------------------------------- commands
@@ -82,7 +65,7 @@ function cmdServe(target) {
     die(`serve needs a target: autocad (got ${target || "nothing"})`);
   }
   const layout = resolveLayout();
-  const missing = missingPieces(layout);
+  const missing = inspectRuntime(layout).issues;
 
   if (missing.length && process.env.CAD_NO_AUTO_INSTALL !== "1") {
     log(`${target} needs ${missing.length} missing piece(s); installing them once.`);
@@ -93,7 +76,7 @@ function cmdServe(target) {
       log(`run "dsh-cad install" by hand to see the full output.`);
       process.exit(1);
     }
-    const still = missingPieces(layout);
+    const still = inspectRuntime(layout).issues;
     if (still.length) {
       log(`still missing after install: ${still.join(", ")}`);
       process.exit(1);
@@ -108,15 +91,9 @@ function cmdServe(target) {
 }
 
 function serveAutocad(layout) {
-  const env = {
-    ...process.env,
-    AUTOCAD_MCP_BACKEND: "auto",
-    TOOL_PROFILE: "full",
-    TOOL_PACKS: "all",
-    DISCOVERY_MODE: "search",
-    ALLOWED_PATHS: layout.workDir,
-  };
-  relay(spawn(layout.acadExe, [], { env, stdio: "inherit" }), "autocad");
+  const config = autocadConfig(layout);
+  const env = { ...process.env, ...config.env };
+  relay(spawn(config.command, config.args, { cwd: config.cwd, env, stdio: "inherit" }), "autocad");
 }
 
 function relay(child, name) {
@@ -142,14 +119,18 @@ function cmdInstall(argv) {
     check: false,
     force: argv.includes("--force"),
     dshPatch: argv.includes("--with-dsh-patch"),
+    withCodex: argv.includes("--with-codex"),
   });
   if (res.status !== 0) {
     die(`installer exited with ${res.status}; see the output above.`);
   }
   writeConfig({
+    ...(readConfig() || {}),
     baseDir: layout.baseDir,
     workDir: layout.workDir,
     python: layout.python,
+    backend: layout.backend,
+    progId: layout.progId,
     installedAt: new Date().toISOString(),
     version: PKG.version,
   });
@@ -166,12 +147,12 @@ function cmdDoctor() {
   // Which side actually has a CAD application to drive. It is only
   // registered when the COM server is present; otherwise it is skipped.
   const probe = path.join(PKG_ROOT, "lib", "probe.py");
-  if (exists(probe)) {
-    const py = exists(layout.pyAcad) ? layout.pyAcad : layout.python;
+  const py = exists(layout.pyAcad) ? layout.pyAcad : layout.python;
+  if (exists(probe) && py) {
     const r = spawnSync(py, [probe], { encoding: "utf8", timeout: 20000 });
     let cad = null;
     try {
-      cad = JSON.parse(r.stdout.trim().split("\n").pop());
+      cad = JSON.parse((r.stdout || "").trim().split("\n").pop());
     } catch {}
     if (cad) {
       log(`cad apps  autocad: ${cad.autocad ? "registered" : "not found"}`);
@@ -192,11 +173,14 @@ function cmdWhere() {
   const rows = {
     baseDir: layout.baseDir,
     workDir: layout.workDir,
+    "base Python": layout.python || "(not found)",
+    "autocad Python": layout.pyAcad,
     "autocad exe": layout.acadExe,
   };
   for (const [k, v] of Object.entries(rows)) {
     console.log(`${exists(v) ? "ok  " : "--  "} ${k.padEnd(18)} ${v}`);
   }
+  console.log(`info ${"Python source".padEnd(18)} ${layout.pythonSource || layout.pythonError}`);
 }
 
 function parseFlags(argv) {
