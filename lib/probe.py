@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Report whether the COM servers this bundle drives are registered.
+"""Report whether the AutoCAD COM server this bundle drives is registered.
 
 Prints one JSON object on stdout. The check is the registry ProgID, not the
 install directory: without a ProgID, COM automation cannot start the
-application, no matter where its files sit. It does not launch either
-application.
+application, no matter where its files sit. It does not launch the application.
 """
 import json
 import sys
@@ -12,7 +11,6 @@ import winreg
 
 PROG_IDS = {
     "autocad": r"AutoCAD.Application",
-    "solidworks": r"SldWorks.Application",
 }
 
 

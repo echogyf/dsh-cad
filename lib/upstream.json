@@ -1,14 +1,9 @@
 {
-  "_comment": "Exact upstream versions this bundle was validated against. Bump deliberately; for the SolidWorks skill, re-check that SW_MCP_DISCOVERY=search still exposes sw_search_tools / sw_describe_tool / sw_call_tool before publishing.",
+  "_comment": "Exact upstream version this bundle was validated against. Bump deliberately.",
   "autocadMcp": {
     "package": "autocad-mcp-pro",
     "extras": "full",
     "version": "1.6.0",
     "validated": "2026-10-23"
-  },
-  "solidworksSkill": {
-    "repo": "https://github.com/wzyn20051216/solidworks-automation-skill",
-    "commit": "2750ac0892fa2854a4495a296ba238a2f2baa83d",
-    "validated": "2026-10-29"
   }
 }

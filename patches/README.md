@@ -1,12 +1,12 @@
 # Patches
 
-Two upstream defects are fixed here until the pull requests land. Both are
-**silent**: nothing raises, nothing appears in the return value, and the damage
-only shows in the drawing or in a file read back later.
+Two upstream AutoCAD defects are fixed here until the pull request lands. Both
+are **silent**: nothing raises, nothing appears in the return value, and the
+damage only shows in the drawing or in a file read back later.
 
-`apply_patches.py` runs after the upstream pieces are installed. It is safe to
-run repeatedly: each patch carries a marker, and a patch whose anchor text has
-moved is reported as **drift** rather than applied to the wrong code.
+`apply_patches.py` runs after the upstream piece is installed. It is safe to run
+repeatedly: each patch carries a marker, and a patch whose anchor text has moved
+is reported as **drift** rather than applied to the wrong code.
 
 ```powershell
 # what is applied right now
@@ -16,35 +16,8 @@ python patches\apply_patches.py --check
 python patches\apply_patches.py
 ```
 
-`install.ps1` runs it as step 6b, and `bootstrap.ps1` reports it as
+`install.ps1` runs it as step 5b, and `bootstrap.ps1` reports it as
 `upstream-patches`, repairing it like any other missing item.
-
-## sw-edge-length-diameter
-
-- **Target:** `dsh-skills/solidworks-automation/scripts/sw_edge_select.py`
-- **Upstream:** <https://github.com/wzyn20051216/solidworks-automation-skill/pull/67>
-- **Symptom:** `describe_edge` returned `length_mm: null` and `diameter_mm: null`
-  for every edge, so `select_edges({"diameter_mm": 60})` rejected everything with
-  "diameter unknown" and `min_length_mm` rejected everything.
-
-Two API mistakes:
-
-| field | was | is |
-|---|---|---|
-| `length_mm` | `edge.GetLength` — `IEdge` has no such member | `ICurve.GetLength3(startParam, endParam)` |
-| `diameter_mm` | `curve_params[6]` treated as a radius | `ICurve.CircleParams[6] * 2` |
-
-`GetCurveParams2` returns `[start.xyz, end.xyz, startParam, endParam, ...]` — 11
-values on 2025 SP5 — so index 6 is a parameter, not a radius.
-
-Getting there needed one workaround: `edge.GetCurve` raises
-`DISP_E_MEMBERNOTFOUND` through pywin32's attribute path even though the member
-exists (`dispid 1`), while `GetCurveParams2` and `GetTwoAdjacentFaces2` on the
-same edge work. The patch invokes the dispid directly and wraps the result with
-`dynamic.Dispatch`; the normal path is still tried first.
-
-Verified on a 45-edge part: 45 errors → 0, 27 diameters, 45 lengths;
-`diameter_mm=60` selects exactly 2 edges with length 188.495559 mm (π×60).
 
 ## acad-dimension-rotation
 

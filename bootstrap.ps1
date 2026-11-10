@@ -1,28 +1,26 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Check this machine for everything dsh-sw-cad needs, and install whatever is missing.
+  Check this machine for everything dsh-cad needs, and install whatever is missing.
 
 .DESCRIPTION
   Idempotent: it inspects first and only touches the pieces that are absent or stale,
-  so running it twice is a no-op. Safe to hand to an agent.
+  so running it twice is a no-op. Safe to hand to the agent.
 
   Detection covers:
     - Python >= 3.11
-    - venv-autocad + the autocad-mcp-pro package (AutoCAD upstream)
-    - venv-solidworks + the SolidWorks upstream's dependencies
-    - the SolidWorks skill clone
-    - the ~/.dsh/skills junction and the two ~/.codex/skills junctions
+    - venv-autocad + the autocad-mcp-pro package
+    - the ~/.dsh/skills junction and the ~/.codex/skills junction
     - the mcp entries in ~/.dsh/cordis.patch.yml and ~/.codex/config.toml
 
   Missing core pieces are handed to install.ps1, the full installer. Small ones
   (junctions, config entries) are fixed in place.
 
-  Writes nothing on C: except ~/.dsh and ~/.codex. Never touches AutoCAD,
-  SolidWorks or the registry.
+  Writes nothing on C: except ~/.dsh and ~/.codex. Never touches AutoCAD or the
+  registry.
 
 .PARAMETER Python
-  Base interpreter used to create the venvs. Default: "python" from PATH.
+  Base interpreter used to create the venv. Default: "python" from PATH.
 .PARAMETER BaseDir
   Root for all runtime artifacts. Default: D:\cad-agents.
 .PARAMETER WorkDir
@@ -30,12 +28,12 @@
 .PARAMETER Check
   Report only, change nothing. Exit code 0 when everything is in place, 1 otherwise.
 .PARAMETER NoDshPatch
-  Do not read or rewrite ~/.dsh/cordis.patch.yml. Set this when the two MCP
-  servers are registered by the npm bundle patch (dsh plugin add) instead.
+  Do not read or rewrite ~/.dsh/cordis.patch.yml. Set this when the MCP
+  server is registered by the npm bundle patch (dsh plugin add) instead.
 .PARAMETER SkipCodex
   Ignore the Codex junctions and config.
 .PARAMETER Force
-  Passed to install.ps1: rebuild the venvs and re-clone the skill.
+  Passed to install.ps1: rebuild the venv.
 .EXAMPLE
   .\bootstrap.ps1 -Check
 .EXAMPLE
@@ -52,19 +50,14 @@ param(
     [switch]$NoDshPatch,
     [string]$DshProfile = "desktop",
     [switch]$Force,
-    [string]$AutocadVersion = "1.6.0",
-    [string]$SkillRef = "2750ac0892fa2854a4495a296ba238a2f2baa83d"
+    [string]$AutocadVersion = "1.6.0"
 )
 
 $ErrorActionPreference = "Stop"
 
 $VenvAcad    = Join-Path $BaseDir "venv-autocad"
-$VenvSw      = Join-Path $BaseDir "venv-solidworks"
 $SkillsDir   = Join-Path $BaseDir "dsh-skills"
-$SkillDest   = Join-Path $SkillsDir "solidworks-automation"
-$SwServer    = Join-Path $SkillDest "mcp-server\server.py"
 $DshHome     = Join-Path $env:USERPROFILE ".dsh"
-$PatchFile   = Join-Path $DshHome "cordis.patch.yml"
 $Junction    = Join-Path $DshHome "skills"
 $ProfileDir  = Join-Path $DshHome (Join-Path "profiles" $DshProfile)
 $CodexHome   = Join-Path $env:USERPROFILE ".codex"
@@ -74,7 +67,6 @@ $Installer   = Join-Path $PSScriptRoot "install.ps1"
 $Snippet     = Join-Path $PSScriptRoot "codex-config.snippet.toml"
 
 $PyAcad = Join-Path $VenvAcad "Scripts\python.exe"
-$PySw   = Join-Path $VenvSw   "Scripts\python.exe"
 $AcadExe = Join-Path $VenvAcad "Scripts\autocad-mcp.exe"
 
 function Add-Item {
@@ -96,17 +88,6 @@ function Test-FileContains {
         if ($text.IndexOf($n) -lt 0) { $missing += $n }
     }
     return $missing
-}
-
-function Get-MissingModules {
-    param([string]$Py, [string[]]$Modules)
-    $list = ($Modules | ForEach-Object { "'" + $_ + "'" }) -join ","
-    $code = "import importlib.util as u; print('|'.join([m for m in [$list] if u.find_spec(m) is None]))"
-    $out = & $Py -c $code 2>$null
-    if ($LASTEXITCODE -ne 0 -or $null -eq $out) { return $Modules }
-    $text = ($out -join "").Trim()
-    if ($text -eq "") { return @() }
-    return $text.Split("|")
 }
 
 function Invoke-Detect {
@@ -160,50 +141,27 @@ function Invoke-Detect {
         }
     }
 
-    # 3. SolidWorks upstream deps
-    if (-not (Test-Path -LiteralPath $PySw)) {
-        Add-Item "core" "venv-solidworks" "MISSING" $VenvSw $null
-    }
-    else {
-        $missing = @(Get-MissingModules $PySw @("mcp", "fitz", "ezdxf", "win32com"))
-        if ($missing.Count -eq 0) {
-            Add-Item "core" "sw-dependencies" "OK" "mcp, pymupdf, ezdxf, pywin32 present" $null
-        }
-        else {
-            Add-Item "core" "sw-dependencies" "MISSING" ("missing: " + ($missing -join ", ")) $null
-        }
-    }
-
-    # 4. SolidWorks skill clone
-    if ((Test-Path -LiteralPath $SwServer) -and (Test-Path -LiteralPath (Join-Path $SkillDest "SKILL.md"))) {
-        Add-Item "core" "sw-skill" "OK" $SkillDest $null
-    }
-    else {
-        Add-Item "core" "sw-skill" "MISSING" $SkillDest $null
-    }
-
-    # 5. dsh skills junction
-    $swVisible = Join-Path $Junction "solidworks-automation\SKILL.md"
+    # 3. dsh skills junction
     $acadVisible = Join-Path $Junction "autocad-mcp-pro\SKILL.md"
-    if ((Test-Path -LiteralPath $swVisible) -and (Test-Path -LiteralPath $acadVisible)) {
+    if (Test-Path -LiteralPath $acadVisible) {
         Add-Item "light" "dsh-skills-junction" "OK" $Junction $null
     }
     else {
         Add-Item "light" "dsh-skills-junction" "MISSING" $Junction $null
     }
 
-    # 6. dsh profile registration. The profile composes its tree from
+    # 4. dsh profile registration. The profile composes its tree from
     #    profiles/<name>/package.json, not from the global cordis.patch.yml, so
     #    that is what has to carry the bundle. Checking the global patch here is
     #    what made the plugin look missing while the profile was fine.
     if (-not $NoDshPatch) {
         $profilePkg = Join-Path $ProfileDir "package.json"
-        $profileLink = Join-Path $ProfileDir "node_modules\dsh-sw-cad"
+        $profileLink = Join-Path $ProfileDir "node_modules\dsh-cad"
         if (-not (Test-Path -LiteralPath $profilePkg)) {
             Add-Item "light" "dsh-config" "MISSING" "no package.json in profile '$DshProfile'" $null
         }
         else {
-            $registered = Test-FileContains $profilePkg @('"dsh-sw-cad"')
+            $registered = Test-FileContains $profilePkg @('"dsh-cad"')
             if ($registered.Count -eq 0 -and (Test-Path -LiteralPath $profileLink)) {
                 Add-Item "light" "dsh-config" "OK" $profilePkg $null
             }
@@ -211,7 +169,7 @@ function Invoke-Detect {
                 Add-Item "light" "dsh-config" "MISSING" "bundle not linked into profile '$DshProfile'" $null
             }
             else {
-                Add-Item "light" "dsh-config" "MISSING" "dsh-sw-cad missing from profile '$DshProfile' bundles" $null
+                Add-Item "light" "dsh-config" "MISSING" "dsh-cad missing from profile '$DshProfile' bundles" $null
             }
         }
     }
@@ -220,18 +178,17 @@ function Invoke-Detect {
         return
     }
 
-    # 7. Codex junctions
-    $cSw = Join-Path $CodexSkills "solidworks-automation\SKILL.md"
+    # 5. Codex junction
     $cAcad = Join-Path $CodexSkills "autocad-mcp-pro\SKILL.md"
-    if ((Test-Path -LiteralPath $cSw) -and (Test-Path -LiteralPath $cAcad)) {
+    if (Test-Path -LiteralPath $cAcad) {
         Add-Item "light" "codex-skills-junction" "OK" $CodexSkills $null
     }
     else {
         Add-Item "light" "codex-skills-junction" "MISSING" $CodexSkills $null
     }
 
-    # 8. Codex config entries
-    $needCodex = @("[mcp_servers.autocad]", "[mcp_servers.solidworks]")
+    # 6. Codex config entries
+    $needCodex = @("[mcp_servers.autocad]")
     $missCodex = @(Test-FileContains $CodexConfig $needCodex)
     if ($missCodex.Count -eq 0) {
         Add-Item "light" "codex-config" "OK" $CodexConfig $null
@@ -240,7 +197,7 @@ function Invoke-Detect {
         Add-Item "light" "codex-config" "MISSING" ("absent: " + ($missCodex -join ", ")) $null
     }
 
-    # 9. upstream fixes this bundle depends on (see patches/README.md)
+    # 7. upstream fixes this bundle depends on (see patches/README.md)
     $patchScript = Join-Path $PSScriptRoot "patches\apply_patches.py"
     if (-not (Test-Path -LiteralPath $patchScript)) {
         Add-Item "light" "upstream-patches" "MISSING" "patches/apply_patches.py is missing" $null
@@ -268,7 +225,7 @@ function Show-Items {
 
 function Invoke-Installer {
     if (-not (Test-Path -LiteralPath $Installer)) { throw "install.ps1 not found next to bootstrap.ps1" }
-    & $Installer -BaseDir $BaseDir -WorkDir $WorkDir -Python $Python -Force:$Force -SkipDshPatch:$NoDshPatch -DshProfile $DshProfile -AutocadVersion $AutocadVersion -SkillRef $SkillRef
+    & $Installer -BaseDir $BaseDir -WorkDir $WorkDir -Python $Python -Force:$Force -SkipDshPatch:$NoDshPatch -DshProfile $DshProfile -AutocadVersion $AutocadVersion
 }
 
 function Repair-Patches {
@@ -294,7 +251,6 @@ function Repair-DshJunction {
 function Repair-CodexJunction {
     New-Item -ItemType Directory -Force -Path $CodexSkills | Out-Null
     foreach ($pair in @(
-            @("solidworks-automation", (Join-Path $SkillsDir "solidworks-automation")),
             @("autocad-mcp-pro", (Join-Path $SkillsDir "autocad-mcp-pro")))) {
         $link = Join-Path $CodexSkills $pair[0]
         if (-not (Test-Path -LiteralPath $link)) {
@@ -317,7 +273,7 @@ function Repair-CodexConfig {
         }
     }
     Add-Content -LiteralPath $CodexConfig -Value ""
-    Add-Content -LiteralPath $CodexConfig -Value "# --- appended by dsh-sw-cad/bootstrap.ps1 ---"
+    Add-Content -LiteralPath $CodexConfig -Value "# --- appended by dsh-cad/bootstrap.ps1 ---"
     Get-Content -LiteralPath $Snippet | Add-Content -LiteralPath $CodexConfig
     Write-Host "  appended $Snippet to $CodexConfig"
 }
@@ -325,7 +281,7 @@ function Repair-CodexConfig {
 # ---------------------------------------------------------------- main
 
 Write-Host ""
-Write-Host "dsh-sw-cad bootstrap -- BaseDir $BaseDir"
+Write-Host "dsh-cad bootstrap -- BaseDir $BaseDir"
 Write-Host ""
 
 Invoke-Detect
@@ -387,6 +343,6 @@ if ($remaining.Count -gt 0) {
 Write-Host "All set. Next:"
 Write-Host "  pnpm dsh --profile headless --dump-config"
 Write-Host "  codex mcp list"
-Write-Host "  start AutoCAD / SolidWorks as the same Windows user as your agent"
+Write-Host "  start AutoCAD as the same Windows user as your agent"
 Write-Host ""
 exit 0

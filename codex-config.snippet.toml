@@ -1,9 +1,8 @@
 # ============================================================
-# dsh-sw-cad -- Codex config.toml snippet
+# dsh-cad -- Codex config.toml snippet
 # Paths assume the default install root D:\cad-agents; adjust if you used -BaseDir.
 # Append this to ~/.codex/config.toml, then verify with: codex mcp list
-# Companion skills (on-demand): junction them into ~/.codex/skills/
-#   solidworks-automation, autocad-mcp-pro
+# Companion skill (on-demand): junction autocad-mcp-pro into ~/.codex/skills/
 # ============================================================
 
 [mcp_servers.autocad]
@@ -16,23 +15,3 @@ TOOL_PROFILE = "full"
 TOOL_PACKS = "all"
 DISCOVERY_MODE = "search"
 ALLOWED_PATHS = "D:\\AutoCad"
-
-[mcp_servers.solidworks]
-# discovery shim: 2 meta-tools at idle (~256 tokens) instead of the upstream
-# 66-tool catalog (~23.4k). The shim spawns server.py on the first call_tool.
-command = "D:\\cad-agents\\venv-solidworks\\Scripts\\python.exe"
-args = [
-  "D:\\cad-agents\\mcp-shim\\sw_discovery_shim.py",
-  "--python", "D:\\cad-agents\\venv-solidworks\\Scripts\\python.exe",
-  "--server", "D:\\cad-agents\\dsh-skills\\solidworks-automation\\mcp-server\\server.py",
-]
-startup_timeout_sec = 30
-
-[mcp_servers.solidworks.env]
-SW_SHIM_TOP_K = "8"
-
-# To use the upstream 66-tool server directly instead, replace the block above with:
-# [mcp_servers.solidworks]
-# command = "D:\\cad-agents\\venv-solidworks\\Scripts\\python.exe"
-# args = ["D:\\cad-agents\\dsh-skills\\solidworks-automation\\mcp-server\\server.py"]
-# startup_timeout_sec = 30

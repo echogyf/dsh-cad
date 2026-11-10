@@ -19,22 +19,23 @@ jobs:
           python-version: '3.12'
 
       # Syntax of everything that ships. CAD automation itself cannot run here:
-      # it needs AutoCAD or SolidWorks, a Windows session, and a COM server.
+      # it needs AutoCAD, a Windows session, and a COM server.
       - name: Parse the JavaScript
         run: |
           node --check lib/index.js
           node --check lib/paths.mjs
-          node --check bin/dsh-sw-cad.mjs
+          node --check bin/dsh-cad.mjs
 
       - name: Compile the Python
         run: |
           python -m py_compile lib/probe.py
+          python -m py_compile patches/apply_patches.py
 
       - name: Resolve paths without a CAD install
-        run: node bin/dsh-sw-cad.mjs where
+        run: node bin/dsh-cad.mjs where
 
       - name: Report the pinned upstream
-        run: node bin/dsh-sw-cad.mjs version
+        run: node bin/dsh-cad.mjs version
 
       - name: Pack
         run: npm pack --dry-run
